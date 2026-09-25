@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+build/
+.npm/
+
+# Docker / OS
+*.log
+logs/
+*.pid
+.DS_Store
+Thumbs.db
+
+# Secrets / certs
+*.pem
+*.crt
+*.key
+secrets/
+credentials/
+backups/
+
+# IDE
+.vscode/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+
+# Git
+*.orig

@@ -25,21 +25,33 @@ services:
   mqtt:
     image: eclipse-mosquitto:2
     container_name: teledis-mqtt
-    restart: unless-stopped
-    volumes:
-      - ./infrastructure/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - mqtt_data:/mosquitto/data
-      - mqtt_logs:/mosquitto/log
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mosquitto_sub -h localhost -u "$$MQTT_USERNAME" -P "$$MQTT_PASSWORD" -t '$$SYS/broker/uptime' -C 1 | grep -q .
+      timeout: 5s
+      interval: 10s
+      retries: 5
+
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+
+    networks:
+      - backend_network
+      - mqtt_network
+
     ports:
       - "1883:1883"
-    networks:
-      - mqtt_network
-      - backend_network
-    healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$SYS/broker/uptime' -C 1 | grep -q ."]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
+    volumes:
+      - ./infrastructure/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infrastructure/mqtt/passwd:/mosquitto/config/passwd:ro
+      - mqtt_data:/mosquitto/data
+      - mqtt_logs:/mosquitto/log
+
+    restart: unless-stopped
 
   backend:
     build:
@@ -66,7 +78,7 @@ services:
       - backend_network
       - mqtt_network
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\""]
       interval: 15s
       timeout: 5s
       retries: 5

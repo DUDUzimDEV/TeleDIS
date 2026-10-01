@@ -1,16 +1,16 @@
 from fastapi import APIRouter
 
+from app.repositories.telemetry_repository import TelemetryRepository
+
 router = APIRouter(tags=["telemetry"])
+repository = TelemetryRepository()
 
 
 @router.get("")
 def list_telemetry():
     return {
         "success": True,
-        "data": [
-            {"maquina_id": 1, "timestamp": "2026-09-25T10:00:00Z", "temperatura": 87.5, "velocidade": 8.4},
-            {"maquina_id": 1, "timestamp": "2026-09-25T10:05:00Z", "temperatura": 89.1, "velocidade": 9.2},
-        ],
+        "data": repository.list_recent(),
     }
 
 
@@ -20,9 +20,6 @@ def get_machine_telemetry(machine_id: int):
         "success": True,
         "data": {
             "maquina_id": machine_id,
-            "historico": [
-                {"timestamp": "2026-09-25T10:00:00Z", "temperatura": 87.5, "velocidade": 8.4},
-                {"timestamp": "2026-09-25T10:05:00Z", "temperatura": 89.1, "velocidade": 9.2},
-            ],
+            "historico": repository.list_recent(machine_id),
         },
     }

@@ -6,6 +6,9 @@ settings = get_settings()
 
 class AuthService:
     def authenticate(self, username: str, password: str) -> str:
+        username = (username or "").strip()
+        password = password or ""
+
         if username != "admin":
             raise ValueError("Credenciais inválidas")
 

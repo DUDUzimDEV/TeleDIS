@@ -27,6 +27,9 @@ class MqttService:
         return [
             "teledis/maquina/+/temperatura",
             "teledis/maquina/+/velocidade",
+            "teledis/maquina/+/rpm",
+            "teledis/maquina/+/combustivel",
+            "teledis/maquina/+/horimetro",
             "teledis/maquina/+/localizacao",
             "teledis/maquina/+/alerta",
         ]
@@ -55,14 +58,15 @@ class MqttService:
         payload.setdefault("metric", metric)
         payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 
-        if metric == "temperatura":
-            payload.setdefault("unidade", "C")
-        elif metric == "velocidade":
-            payload.setdefault("unidade", "km/h")
-        elif metric == "localizacao":
-            payload.setdefault("unidade", "coord")
-        else:
-            payload.setdefault("unidade", "unidade")
+        units = {
+            "temperatura": "C",
+            "velocidade": "km/h",
+            "rpm": "rpm",
+            "combustivel": "%",
+            "horimetro": "h",
+        }
+        if metric in units:
+            payload.setdefault("unidade", units[metric])
 
         valor = payload.get("valor")
         if valor is not None and isinstance(valor, str):
@@ -79,6 +83,27 @@ class MqttService:
     def handle_message(self, topic: str, raw_message: str):
         try:
             payload = self.parse_message(topic, raw_message)
+            if payload.get("metric") == "localizacao":
+                if not self.telemetry_service.validate_location_payload(payload):
+                    logger.warning("MQTT: payload de localização inválido tópico=%s", topic)
+                    return None
+
+                logger.info(
+                    "MQTT: localização validada maquina_id=%s latitude=%s longitude=%s",
+                    payload["maquina_id"],
+                    payload["latitude"],
+                    payload["longitude"],
+                )
+                record = self.telemetry_service.process_location(payload)
+                logger.info(
+                    "MQTT: localização persistida id=%s maquina_id=%s latitude=%s longitude=%s",
+                    record["id"],
+                    record["maquina_id"],
+                    record["latitude"],
+                    record["longitude"],
+                )
+                return record
+
             if not self.telemetry_service.validate_payload(payload):
                 logger.warning("MQTT: payload inválido tópico=%s", topic)
                 return None

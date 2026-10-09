@@ -1,13 +1,16 @@
 import logging
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from app.api.v1.router import api_router
+from app.api.v1.endpoints.health import database_health as check_database_health
+from app.api.v1.endpoints.health import mqtt_health as check_mqtt_health
 from app.config import get_settings
 from app.services.mqtt_service import MqttService
+from app.services.auth_service import ensure_initial_owner
 
 settings = get_settings()
 logging.basicConfig(
@@ -25,6 +28,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+app.state.mqtt_service = mqtt_service
 
 
 def custom_openapi():
@@ -48,16 +52,22 @@ def custom_openapi():
         }
     }
 
-    protected_paths = {"/api/v1/auth/me", "/api/v1/auth/logout"}
+    public_paths = {
+        "/health",
+        "/health/database",
+        "/health/mqtt",
+        "/api/v1/auth/login",
+        "/api/v1/health",
+        "/api/v1/health/database",
+        "/api/v1/health/mqtt",
+    }
     for path, operations in openapi_schema.get("paths", {}).items():
-        if path in {"/api/v1/auth/login"}:
-            continue
         for operation in operations.values():
             if isinstance(operation, dict):
-                if path in protected_paths:
-                    operation["security"] = [{"BearerAuth": []}]
-                else:
+                if path in public_paths:
                     operation.pop("security", None)
+                else:
+                    operation["security"] = [{"BearerAuth": []}]
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
@@ -80,6 +90,7 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.on_event("startup")
 def startup_event():
+    ensure_initial_owner()
     mqtt_service.start()
 
 
@@ -95,9 +106,9 @@ def health_check():
 
 @app.get("/health/database")
 def database_health():
-    return {"status": "ok", "database": "pending_configuration"}
+    return check_database_health()
 
 
 @app.get("/health/mqtt")
-def mqtt_health():
-    return {"status": "ok", "mqtt": "pending_configuration"}
+def mqtt_health(request: Request):
+    return check_mqtt_health(request)

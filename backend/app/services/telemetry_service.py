@@ -71,9 +71,48 @@ class TelemetryService:
 
         return True
 
+    def normalize_location_payload(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("Payload de localização deve ser um dicionário")
+
+        normalized = dict(payload)
+        if "maquina_id" not in normalized and "machine_id" in normalized:
+            normalized["maquina_id"] = normalized["machine_id"]
+        if "timestamp" not in normalized and "recorded_at" in normalized:
+            normalized["timestamp"] = normalized["recorded_at"]
+
+        try:
+            normalized["maquina_id"] = int(normalized["maquina_id"])
+            normalized["latitude"] = float(normalized["latitude"])
+            normalized["longitude"] = float(normalized["longitude"])
+            datetime.fromisoformat(str(normalized["timestamp"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Payload de localização inválido") from exc
+
+        return normalized
+
+    def validate_location_payload(self, payload: dict) -> bool:
+        try:
+            normalized = self.normalize_location_payload(payload)
+        except ValueError:
+            return False
+
+        return (
+            normalized["maquina_id"] > 0
+            and -90 <= normalized["latitude"] <= 90
+            and -180 <= normalized["longitude"] <= 180
+        )
+
     def process_measurement(self, payload: dict):
         normalized = self.normalize_payload(payload)
         if not self.validate_payload(normalized):
             raise ValueError("Payload inválido para telemetria")
 
         return self.repository.create_reading(normalized)
+
+    def process_location(self, payload: dict):
+        normalized = self.normalize_location_payload(payload)
+        if not self.validate_location_payload(normalized):
+            raise ValueError("Payload de localização inválido")
+
+        return self.repository.create_location(normalized)

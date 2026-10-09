@@ -61,7 +61,8 @@ Frontend / Dashboard
 - Regras de negócio;
 - Processamento de telemetria;
 - Geração de alertas;
-- Lógica de rota e operação.
+- Lógica de rota e operação;
+- O serviço de rede gera nós e segmentos a partir de estradas e o serviço de rotas executa Dijkstra.
 
 ### Banco de dados
 - Persistência relacional;
@@ -75,3 +76,5 @@ Frontend / Dashboard
 ## Projeto inicial
 
 A estrutura atual implementa uma base real para as próximas etapas, com endpoints, autenticação inicial, documentação e ambiente Docker.
+
+O motor operacional de rotas usa tabelas próprias (`network_nodes` e `network_segments`), mantendo separadas as tabelas antigas de planos e pontos de rota (`route_plans` e `route_locations`). Consulte [routes.md](./routes.md) para o fluxo e limitações atuais.

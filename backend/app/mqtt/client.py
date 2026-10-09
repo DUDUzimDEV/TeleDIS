@@ -31,6 +31,10 @@ class MqttClient:
         self.client.on_message = self._on_message
         self.client.on_subscribe = self._on_subscribe
 
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
     def set_message_callback(self, callback):
         self._message_callback = callback
 
@@ -115,9 +119,9 @@ class MqttClient:
         topic = self._subscription_mids.pop(message_id, "desconhecido")
         logger.info("MQTT: broker confirmou subscribe tópico=%s resultado=%s", topic, reason_codes)
 
-    def _on_disconnect(self, client, userdata, rc, properties=None):
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None):
         self._connected = False
-        logger.warning("Desconectado do broker MQTT: %s", rc)
+        logger.warning("Desconectado do broker MQTT: %s", reason_code)
 
     def _on_message(self, client, userdata, message):
         if self._message_callback is None:

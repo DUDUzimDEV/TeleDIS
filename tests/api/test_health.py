@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.auth_service import AuthService
 
 client = TestClient(app)
 
@@ -11,8 +12,14 @@ def test_health_endpoint():
     assert response.json()["status"] == "ok"
 
 
-def test_login_endpoint():
+def test_login_endpoint(monkeypatch):
     payload = {"username": "admin", "password": "Admin@123"}
+    monkeypatch.setattr(AuthService, "authenticate_session", lambda self, identifier, password: {
+        "access_token": "test-token",
+        "token_type": "bearer",
+        "user": {"username": identifier, "role": "OWNER"},
+        "farms": [{"id": 1, "name": "Test Farm", "role": "OWNER"}],
+    })
     response = client.post("/api/v1/auth/login", json=payload)
     assert response.status_code == 200
     data = response.json()
@@ -21,13 +28,21 @@ def test_login_endpoint():
     assert data["user"]["username"] == "admin"
 
 
-def test_login_wrong_password():
+def test_login_wrong_password(monkeypatch):
+    def reject_credentials(self, identifier, password):
+        raise ValueError("Credenciais inválidas")
+
+    monkeypatch.setattr(AuthService, "authenticate_session", reject_credentials)
     response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "SenhaErrada@123"})
     assert response.status_code == 401
     assert response.json()["detail"] == "Credenciais inválidas"
 
 
-def test_login_wrong_user():
+def test_login_wrong_user(monkeypatch):
+    def reject_credentials(self, identifier, password):
+        raise ValueError("Credenciais inválidas")
+
+    monkeypatch.setattr(AuthService, "authenticate_session", reject_credentials)
     response = client.post("/api/v1/auth/login", json={"username": "usuario_inexistente", "password": "Admin@123"})
     assert response.status_code == 401
     assert response.json()["detail"] == "Credenciais inválidas"

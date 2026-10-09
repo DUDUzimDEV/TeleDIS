@@ -11,6 +11,7 @@ teledis/maquina/{id}/temperatura
 teledis/maquina/{id}/velocidade
 teledis/maquina/{id}/combustivel
 teledis/maquina/{id}/rpm
+teledis/maquina/{id}/horimetro
 teledis/maquina/{id}/localizacao
 teledis/maquina/{id}/rota
 teledis/maquina/{id}/status
@@ -27,6 +28,21 @@ teledis/maquina/{id}/alerta
   "unidade": "C"
 }
 ```
+
+## Payload de localização GPS
+
+Localização é publicada sem `valor` escalar e é persistida separadamente das medições:
+
+```json
+{
+  "maquina_id": 1,
+  "timestamp": "2026-10-01T14:10:00Z",
+  "latitude": -23.500467,
+  "longitude": -47.4521
+}
+```
+
+Temperatura, velocidade, RPM, combustível e horímetro usam `telemetry_readings` com `valor` numérico e unidade, definidos por `measurement_types`.
 
 ## Validações previstas
 

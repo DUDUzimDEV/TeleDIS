@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, ForeignKey
+from sqlalchemy import BigInteger, String, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -14,6 +14,7 @@ class Machine(Base):
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    farm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     brand_id: Mapped[int | None] = mapped_column(ForeignKey("brands.id"), nullable=True)
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
 

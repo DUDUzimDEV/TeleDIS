@@ -198,7 +198,7 @@ class SpatialValidationService:
                        CASE WHEN farms.operational_area IS NOT NULL
                             THEN ST_AsGeoJSON(farms.operational_area) END AS geometry_json,
                        farms.proximity_radius_m,
-                       COALESCE(
+                       ST_AsGeoJSON(COALESCE(
                            ST_Centroid(farms.operational_area),
                            (
                                SELECT ST_Centroid(ST_Collect(spatial.geometry))
@@ -217,7 +217,7 @@ class SpatialValidationService:
                                ORDER BY location.recorded_at DESC
                                LIMIT 1
                            )
-                       ) AS center
+                       )) AS center_json
                 FROM farms
                 WHERE farms.id = :farm_id
             """),
@@ -231,9 +231,7 @@ class SpatialValidationService:
         zone = None
         if geometry is not None:
             zone = self._proximity_zone(db, row.geometry_json, row.proximity_radius_m)
-        center = None
-        if row.center is not None:
-            center = {"type": "Point", "coordinates": [row.center.x, row.center.y]}
+        center = json.loads(row.center_json) if row.center_json else None
         return {
             "farm_id": farm_id,
             "configured": bool(row.configured),

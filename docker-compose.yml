@@ -23,16 +23,20 @@ services:
       retries: 5
 
   mqtt:
-    image: eclipse-mosquitto:2
+    image: teledis-mqtt:local
+    build:
+      context: ./infrastructure/mqtt
+      dockerfile: Dockerfile
     container_name: teledis-mqtt
 
     healthcheck:
       test:
         - CMD-SHELL
-        - mosquitto_sub -h localhost -u "$$MQTT_USERNAME" -P "$$MQTT_PASSWORD" -t '$$SYS/broker/uptime' -C 1 | grep -q .
+        - mosquitto_pub -h localhost -u "$$MQTT_USERNAME" -P "$$MQTT_PASSWORD" -t teledis/healthcheck -m ok -q 1
       timeout: 5s
       interval: 10s
       retries: 5
+      start_period: 10s
 
     environment:
       MQTT_USERNAME: ${MQTT_USERNAME}
@@ -46,8 +50,6 @@ services:
       - "1883:1883"
 
     volumes:
-      - ./infrastructure/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./infrastructure/mqtt/passwd:/mosquitto/config/passwd:ro
       - mqtt_data:/mosquitto/data
       - mqtt_logs:/mosquitto/log
 

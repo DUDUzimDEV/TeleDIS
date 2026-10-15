@@ -42,7 +42,13 @@ function responseError(payload, status) {
 }
 
 async function readResponse(response) {
-  const payload = await response.json();
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    if (!response.ok) throw new Error(`A solicitação falhou (HTTP ${response.status}).`);
+    throw new Error('O servidor retornou uma resposta inválida.');
+  }
   if (!response.ok) throw new Error(responseError(payload, response.status));
   return payload;
 }
@@ -72,6 +78,7 @@ export default function FarmsPage() {
     setFormError('');
     const body = {
       ...draft,
+      state: draft.state.trim() || null,
       area_ha: draft.area_ha ? Number(draft.area_ha) : null,
       ...(createAreaDraft.geometry ? {
         operational_area: {
@@ -135,8 +142,10 @@ export default function FarmsPage() {
     setFormError('');
     setSaving(true);
     try {
-      await selectFarm(farm.id);
-      const areaPayload = await readResponse(await apiFetch(`/api/v1/farms/${farm.id}/operational-area`));
+      const areaPayload = await readResponse(await apiFetch(
+        `/api/v1/farms/${farm.id}/operational-area`,
+        { farmId: farm.id },
+      ));
       setEditFarmId(farm.id);
       setEditDraft({
         name: farm.name,
@@ -178,6 +187,7 @@ export default function FarmsPage() {
     try {
       await readResponse(await apiFetch(`/api/v1/farms/${editFarmId}`, {
         method: 'PATCH',
+        farmId: editFarmId,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       }));

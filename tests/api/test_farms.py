@@ -5,7 +5,11 @@ from fastapi.testclient import TestClient
 from app.api.v1.endpoints import farms
 from app.main import app
 from app.models.user import Farm
-from app.services.spatial_validation_service import SpatialValidationError, spatial_validation_service
+from app.services.spatial_validation_service import (
+    SpatialValidationError,
+    SpatialValidationService,
+    spatial_validation_service,
+)
 
 client = TestClient(app)
 
@@ -19,6 +23,24 @@ polygon = {
         [-50.123, -21.123],
     ]],
 }
+
+
+def test_operational_area_serialization_returns_geojson_center(monkeypatch):
+    service = SpatialValidationService()
+    monkeypatch.setattr(service, "_proximity_zone", lambda *_args: None)
+    row = SimpleNamespace(
+        configured=True,
+        geometry_json=None,
+        proximity_radius_m=500,
+        center_json='{"type":"Point","coordinates":[-50.123,-21.123]}',
+    )
+
+    response = service._serialize_area(row, 7, None)
+
+    assert response["center"] == {
+        "type": "Point",
+        "coordinates": [-50.123, -21.123],
+    }
 
 
 class FakeTransaction:

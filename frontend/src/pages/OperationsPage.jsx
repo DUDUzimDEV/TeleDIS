@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ClipboardList, Route as RouteIcon } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ClipboardList, Route as RouteIcon, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { apiFetch } from '../api/apiClient';
@@ -9,14 +9,19 @@ import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 
 const asList = (value) => Array.isArray(value) ? value : [];
+const LIVE_REFRESH_INTERVAL_MS = 5000;
 export default function OperationsPage() {
   const { can } = useAuth();
   const [refresh, setRefresh] = useState(0);
   const [selectedId, setSelectedId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState('');
   const [form, setForm] = useState({ operation_type: 'COLHEITA', name: '', field_id: '', priority: 'NORMAL' });
-  const operationsResource = useApiResource('/api/v1/operations', refresh);
+  const operationsResource = useApiResource('/api/v1/operations', refresh, {
+    pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+  });
   const fieldsResource = useApiResource('/api/v1/fields');
   const teamsResource = useApiResource('/api/v1/teams');
   const machinesResource = useApiResource('/api/v1/machines');
@@ -24,7 +29,17 @@ export default function OperationsPage() {
   const fields = asList(fieldsResource.data);
   const teams = asList(teamsResource.data);
   const machines = asList(machinesResource.data);
-  const selected = operations.find((operation) => operation.id === selectedId) || operations[0] || null;
+  const statuses = [...new Set(operations.map((operation) => operation.status).filter(Boolean))];
+  const filteredOperations = useMemo(() => operations.filter((operation) => (
+    (statusFilter === 'all' || operation.status === statusFilter)
+    && `${operation.name || ''} ${operation.code || ''} ${operation.field_name || ''} ${operation.machine_name || ''} ${operation.operator_name || ''} ${operation.team_name || ''}`
+      .toLocaleLowerCase('pt-BR')
+      .includes(search.trim().toLocaleLowerCase('pt-BR'))
+  )), [operations, search, statusFilter]);
+  const selected = filteredOperations.find((operation) => operation.id === selectedId) || filteredOperations[0] || null;
+  const inProgressCount = operations.filter((operation) => ['EM_EXECUCAO', 'INTERROMPIDA'].includes(operation.status)).length;
+  const plannedCount = operations.filter((operation) => operation.status === 'PLANEJADA').length;
+  const completedCount = operations.filter((operation) => operation.status === 'CONCLUIDA').length;
   const [assignmentTeamId, setAssignmentTeamId] = useState('');
   const teamMembersResource = useApiResource(
     `/api/v1/teams/${assignmentTeamId}/members`,
@@ -101,17 +116,40 @@ export default function OperationsPage() {
         </form>
       </section> : null}
 
+      <section className="operation-summary-strip" aria-label="Resumo das operações">
+        <article><span>Total na programação</span><strong>{operationsResource.loading ? '—' : operations.length}</strong></article>
+        <article><span>Planejadas</span><strong>{operationsResource.loading ? '—' : plannedCount}</strong></article>
+        <article><span>Em execução ou interrompidas</span><strong>{operationsResource.loading ? '—' : inProgressCount}</strong></article>
+        <article><span>Concluídas</span><strong>{operationsResource.loading ? '—' : completedCount}</strong></article>
+      </section>
+
       {operationsResource.loading ? <LoadingState label="Carregando operações..." /> : null}
       {!operationsResource.loading && !operationsResource.error && !operations.length ? (
         <EmptyState title="Nenhuma operação planejada" description="Operações cadastradas nesta fazenda aparecerão aqui." icon={ClipboardList} />
       ) : null}
+      {!operationsResource.loading && !operationsResource.error && operations.length > 0 && filteredOperations.length === 0 ? (
+        <EmptyState title="Nenhuma operação corresponde à busca" description="Altere o texto ou o status selecionado para ver outros registros." icon={ClipboardList} />
+      ) : null}
       {selected ? (
         <section className="cycle-workspace">
           <aside className="cycle-list-panel">
-            <div className="list-panel-heading"><strong>Programação</strong><span>{operations.length}</span></div>
-            {operations.map((operation) => (
+            <div className="list-panel-heading"><strong>Programação</strong><span>{filteredOperations.length} / {operations.length}</span></div>
+            <div className="operation-list-filters">
+              <label className="search-field">
+                <Search size={15} aria-hidden="true" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Buscar operação" placeholder="Buscar operação, máquina ou equipe" />
+              </label>
+              <label className="sr-only" htmlFor="operation-status-filter">Filtrar operações por status</label>
+              <select id="operation-status-filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">Todos os status</option>
+                {statuses.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}
+              </select>
+            </div>
+            {filteredOperations.map((operation) => (
               <button key={operation.id} type="button" className={`cycle-operation-choice ${selected.id === operation.id ? 'selected' : ''}`} onClick={() => setSelectedId(operation.id)}>
-                <strong>{operation.name}</strong><span>{operation.field_name} · {operation.operation_type}</span><small>{operation.status} · {operation.priority}</small>
+                <strong>{operation.name}</strong><span>{operation.field_name} · {operation.operation_type}</span>
+                <small>{operation.machine_name || 'Sem máquina'} · {operation.team_name || 'Sem equipe'}</small>
+                <small>{operation.status.replaceAll('_', ' ')} · {operation.priority}</small>
               </button>
             ))}
           </aside>
@@ -146,7 +184,14 @@ export default function OperationsPage() {
                 <button className="toolbar-button outline" type="button" disabled={Boolean(busyId)} onClick={() => send(`/api/v1/operations/${selected.id}/cancel`, 'POST', { reason: 'Cancelada pela coordenação.' })}>Cancelar operação</button>
               </div>
             ) : null}
-            {selected.status !== 'PLANEJADA' ? <OperationHistory key={`${selected.id}-${refresh}`} operationId={selected.id} /> : null}
+            {selected.status !== 'PLANEJADA' ? (
+              <OperationHistory
+                key={`${selected.id}-${refresh}`}
+                operationId={selected.id}
+                canViewHistory={can('operations.history')}
+                isExecuting={['EM_EXECUCAO', 'INTERROMPIDA'].includes(selected.status)}
+              />
+            ) : null}
           </article>
         </section>
       ) : null}
@@ -154,10 +199,17 @@ export default function OperationsPage() {
   );
 }
 
-function OperationHistory({ operationId }) {
-  const historyResource = useApiResource(`/api/v1/operations/${operationId}/history`);
-  const locationsResource = useApiResource(`/api/v1/operations/${operationId}/locations`);
-  const occurrencesResource = useApiResource(`/api/v1/operations/${operationId}/occurrences`);
+function OperationHistory({ operationId, isExecuting, canViewHistory }) {
+  const historyResource = useApiResource(`/api/v1/operations/${operationId}/history`, 0, {
+    enabled: canViewHistory,
+  });
+  const locationsResource = useApiResource(`/api/v1/operations/${operationId}/locations`, 0, {
+    enabled: canViewHistory,
+    pollingIntervalMs: isExecuting ? LIVE_REFRESH_INTERVAL_MS : 0,
+  });
+  const occurrencesResource = useApiResource(`/api/v1/operations/${operationId}/occurrences`, 0, {
+    enabled: canViewHistory,
+  });
   const history = historyResource.data || { statuses: [], routes: [] };
   const occurrences = asList(occurrencesResource.data);
   const comparison = locationsResource.data?.comparison;
@@ -165,6 +217,7 @@ function OperationHistory({ operationId }) {
   return (
     <section className="cycle-subpanel">
       <h3>Histórico e resultado operacional</h3>
+      {!canViewHistory ? <p className="cycle-data-note">Seu perfil não possui permissão para consultar o histórico GPS desta operação.</p> : null}
       {historyResource.error ? <ErrorState message={historyResource.error} onRetry={historyResource.reload} /> : null}
       {locationsResource.error ? <ErrorState message={locationsResource.error} onRetry={locationsResource.reload} /> : null}
       {occurrencesResource.error ? <ErrorState message={occurrencesResource.error} onRetry={occurrencesResource.reload} /> : null}

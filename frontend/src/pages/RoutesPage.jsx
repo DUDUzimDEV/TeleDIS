@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { AlertTriangle, ArrowDown, ArrowUp, Route as RouteIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { apiFetch } from '../api/apiClient';
 import EntityMap from '../components/map/EntityMap';
@@ -8,18 +9,25 @@ import { EmptyState, ErrorState, LoadingState } from '../components/ui/PageState
 import StatusBadge from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
-import { geoLineToLeaflet } from '../utils/geoData';
+import { formatDateTime, geoLineToLeaflet } from '../utils/geoData';
+import { getCommunicationStatus } from '../utils/liveStatus';
 import { routeErrorMessage, routeResponseToMap } from '../utils/routeUtils';
 
 const asList = (value) => Array.isArray(value) ? value : [];
+const LIVE_REFRESH_INTERVAL_MS = 5000;
 
 export default function RoutesPage() {
   const { can } = useAuth();
+  const operationsResource = useApiResource('/api/v1/operations', 0, {
+    enabled: can('operations.view'),
+    pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+  });
   const machinesResource = useApiResource('/api/v1/machines');
   const structuresResource = useApiResource('/api/v1/structures');
   const locationsResource = useApiResource('/api/v1/locations');
   const segmentsResource = useApiResource('/api/v1/routes/segments');
   const problemsResource = useApiResource('/api/v1/road-problems');
+  const [selectedRouteOperationId, setSelectedRouteOperationId] = useState('');
   const [mode, setMode] = useState('machine');
   const [machineId, setMachineId] = useState('');
   const [structureId, setStructureId] = useState('');
@@ -34,9 +42,56 @@ export default function RoutesPage() {
   const locations = asList(locationsResource.data);
   const segments = asList(segmentsResource.data);
   const problems = asList(problemsResource.data);
+  const routeOperations = asList(operationsResource.data)
+    .filter((operation) => operation.machine_id && operation.route_plan_id)
+    .sort((left, right) => new Date(right.updated_at || right.created_at || 0) - new Date(left.updated_at || left.created_at || 0));
+  const selectedRouteOperation = routeOperations.find(
+    (operation) => String(operation.id) === selectedRouteOperationId,
+  ) || routeOperations[0] || null;
+  const operationHistoryResource = useApiResource(
+    selectedRouteOperation && can('operations.history')
+      ? `/api/v1/operations/${selectedRouteOperation.id}/history`
+      : '',
+    0,
+    { enabled: Boolean(selectedRouteOperation && can('operations.history')) },
+  );
+  const operationLocationsResource = useApiResource(
+    selectedRouteOperation && can('operations.history')
+      ? `/api/v1/operations/${selectedRouteOperation.id}/locations`
+      : '',
+    0,
+    {
+      enabled: Boolean(selectedRouteOperation?.started_at && can('operations.history')),
+      pollingIntervalMs: ['EM_EXECUCAO', 'INTERROMPIDA'].includes(selectedRouteOperation?.status)
+        ? LIVE_REFRESH_INTERVAL_MS
+        : 0,
+    },
+  );
+  const latestLocationResource = useApiResource(
+    selectedRouteOperation?.machine_id
+      ? `/api/v1/locations/${selectedRouteOperation.machine_id}?limit=1`
+      : '',
+    0,
+    {
+      enabled: Boolean(selectedRouteOperation?.machine_id && can('machines.view')),
+      pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+    },
+  );
+  const persistedRoutes = asList(operationHistoryResource.data?.routes);
+  const persistedRoute = persistedRoutes.find(
+    (item) => Number(item.id) === Number(selectedRouteOperation?.route_plan_id),
+  ) || persistedRoutes[persistedRoutes.length - 1];
+  const persistedRouteCoordinates = geoLineToLeaflet(persistedRoute?.route_geometry);
+  const persistedTrackCoordinates = asList(operationLocationsResource.data?.locations)
+    .map((location) => [Number(location.latitude), Number(location.longitude)])
+    .filter((point) => point.every(Number.isFinite));
+  const latestMachineLocation = asList(latestLocationResource.data?.historico)[0];
+  const routeCommunicationStatus = getCommunicationStatus(latestMachineLocation?.timestamp);
   const routeCoordinates = useMemo(() => route?.routePoints || [], [route]);
   const mappedSegments = segments.map((segment) => ({ ...segment, nome: `Trecho ${segment.id}` }));
-  const affectedIds = new Set(route?.affectedSegments || []);
+  const affectedIds = new Set((route?.affectedSegments || []).map(String));
+  const routeSegmentIds = new Set((route?.segments || []).map(String));
+  const selectedRouteSegments = segments.filter((segment) => routeSegmentIds.has(String(segment.id)));
   const routeProblems = route?.problems || [];
   const currentMachineLocation = locations
     .filter((location) => String(location.maquina_id) === String(machineId))
@@ -173,6 +228,18 @@ export default function RoutesPage() {
                 <div><span>Tempo</span><strong>—</strong></div>
               </div>
               <p className="route-cost-disclaimer">O custo é uma distância ponderada pelas condições viárias; tempo e consumo não são fornecidos.</p>
+              {selectedRouteSegments.length ? (
+                <section className="route-segment-list" aria-label="Trechos da rota calculada">
+                  <h3>Trechos do percurso</h3>
+                  {selectedRouteSegments.map((segment) => (
+                    <div className="route-segment-row" key={segment.id}>
+                      <span className={`route-segment-marker${affectedIds.has(String(segment.id)) ? ' affected' : ''}`} aria-hidden="true" />
+                      <span><strong>Trecho {segment.id}</strong><small>{segment.length_m == null ? 'Comprimento não informado' : `${Number(segment.length_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m`} · {affectedIds.has(String(segment.id)) ? 'Problema associado' : 'Sem problema retornado'}</small></span>
+                      <StatusBadge tone={affectedIds.has(String(segment.id)) ? 'warning' : 'success'}>{affectedIds.has(String(segment.id)) ? 'Afetado' : 'Incluído'}</StatusBadge>
+                    </div>
+                  ))}
+                </section>
+              ) : null}
               {openProblemsOnRoute ? (
                 <div className="route-problem-impact">
                   <h3><AlertTriangle size={16} />Problemas associados</h3>
@@ -189,6 +256,55 @@ export default function RoutesPage() {
           ) : (
             <EmptyState title="Aguardando origem e destino" description="Preencha os pontos para calcular um percurso na rede viária persistida." icon={RouteIcon} />
           )}
+          <section className="route-result-panel persisted-route-panel">
+            <header><span className="section-overline">Rota operacional persistida</span></header>
+            {operationsResource.error ? (
+              <ErrorState message={operationsResource.error} onRetry={operationsResource.reload} />
+            ) : !can('operations.view') ? (
+              <p className="route-cost-disclaimer">Seu perfil não possui acesso à lista de operações.</p>
+            ) : routeOperations.length ? (
+              <>
+                <label className="persisted-route-select">
+                  Operação
+                  <select
+                    value={selectedRouteOperation?.id || ''}
+                    onChange={(event) => setSelectedRouteOperationId(event.target.value)}
+                  >
+                    {routeOperations.map((operation) => (
+                      <option key={operation.id} value={operation.id}>
+                        {operation.name || operation.code || `Operação ${operation.id}`} · Plano {operation.route_plan_id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="route-result-stat-grid">
+                  <div><span>Estado da operação</span><strong>{selectedRouteOperation.status.replaceAll('_', ' ')}</strong></div>
+                  <div><span>Versões persistidas</span><strong>{persistedRoutes.length || '—'}</strong></div>
+                  <div><span>Pontos GPS</span><strong>{operationLocationsResource.data?.comparison?.gps_sample_count ?? persistedTrackCoordinates.length}</strong></div>
+                  <div><span>Plano</span><strong>#{selectedRouteOperation.route_plan_id}</strong></div>
+                </div>
+                {can('machines.view') ? (
+                  <div className="operation-live-meta">
+                    <span className={`live-status live-status-${routeCommunicationStatus.toLowerCase()}`}>
+                      Comunicação: {routeCommunicationStatus === 'ONLINE' ? 'online' : routeCommunicationStatus === 'STALE' ? 'desatualizada' : 'sem dados'}
+                    </span>
+                    <span>Última posição: {formatDateTime(latestMachineLocation?.timestamp)}</span>
+                    <span>Origem: {latestMachineLocation?.source === 'SIMULATED' ? 'DADO SIMULADO' : latestMachineLocation?.source === 'REAL' ? 'DADO REAL' : 'Não informada'}</span>
+                  </div>
+                ) : null}
+                {Number(operationLocationsResource.data?.comparison?.gps_sample_count) === 1 ? (
+                  <p className="route-cost-disclaimer">Há apenas 1 ponto GPS no período; ele é exibido como ponto, sem inferir uma trajetória.</p>
+                ) : null}
+                {operationHistoryResource.error ? <ErrorState message={operationHistoryResource.error} onRetry={operationHistoryResource.reload} /> : null}
+                {operationLocationsResource.error ? <ErrorState message={operationLocationsResource.error} onRetry={operationLocationsResource.reload} /> : null}
+                {latestLocationResource.error ? <ErrorState message={latestLocationResource.error} onRetry={latestLocationResource.reload} /> : null}
+                {!can('operations.history') ? <p className="route-cost-disclaimer">Seu perfil não possui permissão para consultar a trajetória GPS e o histórico da rota.</p> : null}
+                <Link className="text-link" to={`/operacoes/${selectedRouteOperation.id}`}>Abrir detalhes e comparação da operação</Link>
+              </>
+            ) : (
+              <p className="route-cost-disclaimer">Não há operações com plano de rota associado nesta fazenda.</p>
+            )}
+          </section>
           <section className="route-network-status">
             <span className="section-overline">Rede viária disponível</span>
             {segmentsResource.loading ? <strong>Consultando segmentos...</strong> : segmentsResource.error ? <strong>Não foi possível carregar a rede</strong> : (
@@ -201,19 +317,32 @@ export default function RoutesPage() {
         <section className="route-map-stage">
           <header className="route-map-header">
             <div><span className="section-overline">Visualização geográfica</span><h2>Rede e percurso</h2></div>
-            <div className="route-map-legend"><span><i className="legend-line" />Rede viária</span><span><i className="route-legend-line" />Rota calculada</span></div>
+            <div className="route-map-legend">
+              <span><i className="legend-line" />Rede disponível</span>
+              <span><i className={persistedRouteCoordinates.length && !route ? 'route-legend-persisted' : 'route-legend-line'} />{persistedRouteCoordinates.length && !route ? 'Plano persistido' : 'Rota calculada'}</span>
+              {persistedTrackCoordinates.length > 1 ? <span><i className="route-legend-actual" />Trajetória GPS</span> : null}
+              <span><i className="route-segment-swatch affected" />Trecho com problema</span>
+              <span><i className="route-segment-swatch blocked" />Trecho bloqueado</span>
+            </div>
           </header>
-          {segments.length || structures.length || routeCoordinates.length ? (
-            <EntityMap
-              className="route-network-map"
-              roads={mappedSegments}
-              structures={structures}
-              roadProblems={problems}
-              machines={locations}
-              routeCoordinates={routeCoordinates}
-              visibleLayers={{ fields: false, roads: true, structures: true, problems: true, machines: true }}
-              zoom={13}
-            />
+          {segments.length || structures.length || routeCoordinates.length || persistedRouteCoordinates.length || persistedTrackCoordinates.length ? (
+            <>
+              <EntityMap
+                className="route-network-map"
+                roads={mappedSegments}
+                structures={structures}
+                roadProblems={problems}
+                machines={locations}
+                fitBoundsKey={selectedRouteOperation?.id || 'calculated-route'}
+                routeCoordinates={routeCoordinates}
+                plannedRouteCoordinates={route?.routePoints?.length ? [] : persistedRouteCoordinates}
+                actualRouteCoordinates={persistedTrackCoordinates}
+                routeSegmentIds={route?.segments || []}
+                affectedSegmentIds={route?.affectedSegments || []}
+                visibleLayers={{ fields: false, roads: true, structures: true, problems: true, machines: true }}
+                zoom={13}
+              />
+            </>
           ) : segmentsResource.loading ? <LoadingState label="Carregando rede geográfica..." /> : (
             <EmptyState title="Rede sem geometria disponível" description="Construa a rede viária pelo Mapa Operacional após cadastrar estradas." icon={RouteIcon} />
           )}

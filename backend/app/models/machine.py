@@ -15,6 +15,10 @@ class Machine(Base):
     status: Mapped[str] = mapped_column(String(30), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     farm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    base_structure_id: Mapped[int | None] = mapped_column(
+        ForeignKey("structures.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     brand_id: Mapped[int | None] = mapped_column(ForeignKey("brands.id"), nullable=True)
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
 

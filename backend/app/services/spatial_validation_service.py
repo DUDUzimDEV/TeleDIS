@@ -27,6 +27,67 @@ class SpatialValidationService:
         "road": ("ST_LineString", "A estrada está fora da área e da zona de proximidade permitida."),
     }
 
+    @staticmethod
+    def validate_simulated_location(
+        db: Session,
+        farm_id: int,
+        latitude: float,
+        longitude: float,
+    ) -> dict:
+        row = db.execute(
+            text("""
+                WITH input AS (
+                    SELECT ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326) AS point
+                )
+                SELECT farms.operational_area IS NOT NULL AS configured,
+                       CASE WHEN farms.operational_area IS NOT NULL
+                            THEN ST_IsValid(farms.operational_area)
+                            ELSE FALSE END AS valid_area,
+                       CASE WHEN farms.operational_area IS NOT NULL
+                            THEN ST_Covers(farms.operational_area, input.point)
+                            ELSE FALSE END AS inside_area,
+                       CASE WHEN farms.operational_area IS NOT NULL
+                                  AND ST_IsValid(farms.operational_area)
+                            THEN ST_Covers(
+                                ST_Buffer(
+                                    farms.operational_area::geography,
+                                    farms.proximity_radius_m
+                                )::geometry,
+                                input.point
+                            )
+                            ELSE FALSE END AS within_proximity
+                FROM farms CROSS JOIN input
+                WHERE farms.id = :farm_id
+                FOR SHARE OF farms
+            """),
+            {"farm_id": farm_id, "latitude": latitude, "longitude": longitude},
+        ).one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Fazenda não encontrada.")
+        if not row.configured:
+            raise SpatialValidationError(
+                "OPERATIONAL_AREA_NOT_CONFIGURED",
+                "A área operacional desta fazenda ainda não foi configurada.",
+            )
+        if not row.valid_area:
+            raise SpatialValidationError(
+                "INVALID_OPERATIONAL_AREA",
+                "A área operacional desta fazenda não é uma geometria válida.",
+            )
+        if not row.within_proximity:
+            raise SpatialValidationError(
+                "OUTSIDE_OPERATIONAL_AREA",
+                "A localização simulada está fora da área operacional e do raio de proximidade.",
+            )
+        return {
+            "valid": True,
+            "location_scope": (
+                "INSIDE_OPERATIONAL_AREA"
+                if row.inside_area
+                else "WITHIN_PROXIMITY_ZONE"
+            ),
+        }
+
     def get_area(self, farm_id: int) -> dict:
         with SessionLocal() as db:
             row = self._area_record(db, farm_id)

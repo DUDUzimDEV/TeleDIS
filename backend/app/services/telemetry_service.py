@@ -2,6 +2,10 @@ from datetime import datetime, timezone
 
 from app.repositories.telemetry_repository import TelemetryRepository
 
+REAL_DATA_SOURCE = "REAL"
+SIMULATED_DATA_SOURCE = "SIMULATED"
+DATA_SOURCES = {REAL_DATA_SOURCE, SIMULATED_DATA_SOURCE}
+
 
 class TelemetryService:
     def __init__(self, repository: TelemetryRepository | None = None):
@@ -14,6 +18,7 @@ class TelemetryService:
             raise ValueError("Payload deve ser um dicionário")
 
         normalized = dict(payload)
+        normalized["source"] = self._normalize_source(normalized.get("source"))
         if "maquina_id" not in normalized and "machine_id" in normalized:
             normalized["maquina_id"] = normalized["machine_id"]
 
@@ -76,6 +81,7 @@ class TelemetryService:
             raise ValueError("Payload de localização deve ser um dicionário")
 
         normalized = dict(payload)
+        normalized["source"] = self._normalize_source(normalized.get("source"))
         if "maquina_id" not in normalized and "machine_id" in normalized:
             normalized["maquina_id"] = normalized["machine_id"]
         if "timestamp" not in normalized and "recorded_at" in normalized:
@@ -90,6 +96,13 @@ class TelemetryService:
             raise ValueError("Payload de localização inválido") from exc
 
         return normalized
+
+    @staticmethod
+    def _normalize_source(value: str | None) -> str:
+        source = REAL_DATA_SOURCE if value is None else value
+        if not isinstance(source, str) or source.upper() not in DATA_SOURCES:
+            raise ValueError("source deve ser REAL ou SIMULATED")
+        return source.upper()
 
     def validate_location_payload(self, payload: dict) -> bool:
         try:

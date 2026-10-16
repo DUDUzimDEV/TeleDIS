@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Building2, MapPin, Plus, Sprout } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-import { apiFetch } from '../api/apiClient';
+import { apiFetch, readApiResponse } from '../api/apiClient';
 import OperationalAreaEditor from '../components/map/OperationalAreaEditor';
 import PageHeading from '../components/ui/PageHeading';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/PageState';
@@ -27,31 +27,6 @@ const emptyAreaDraft = () => ({
   valid: true,
   message: '',
 });
-
-function responseError(payload, status) {
-  const detail = payload?.detail;
-  if (typeof detail === 'string') return detail;
-  if (detail?.message) {
-    const resources = Array.isArray(detail.resources) && detail.resources.length
-      ? ` Recursos afetados: ${detail.resources.map((resource) => `${resource.resource_type} #${resource.id}`).join(', ')}.`
-      : '';
-    return `${detail.message}${resources}`;
-  }
-  if (Array.isArray(detail)) return detail.map((item) => item.msg).join(' ');
-  return `A solicitação falhou (HTTP ${status}).`;
-}
-
-async function readResponse(response) {
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch {
-    if (!response.ok) throw new Error(`A solicitação falhou (HTTP ${response.status}).`);
-    throw new Error('O servidor retornou uma resposta inválida.');
-  }
-  if (!response.ok) throw new Error(responseError(payload, response.status));
-  return payload;
-}
 
 export default function FarmsPage() {
   const resource = useApiResource('/api/v1/farms');
@@ -88,7 +63,7 @@ export default function FarmsPage() {
       } : {}),
     };
     try {
-      await readResponse(await apiFetch('/api/v1/farms', {
+      await readApiResponse(await apiFetch('/api/v1/farms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -117,7 +92,7 @@ export default function FarmsPage() {
         await selectFarm(otherFarm.id);
         navigate(otherFarm.role === 'OPERATOR' ? '/operacao' : '/dashboard');
       }
-      await readResponse(await apiFetch(`/api/v1/farms/${farm.id}`, {
+      await readApiResponse(await apiFetch(`/api/v1/farms/${farm.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'inactive' }),
@@ -142,7 +117,7 @@ export default function FarmsPage() {
     setFormError('');
     setSaving(true);
     try {
-      const areaPayload = await readResponse(await apiFetch(
+      const areaPayload = await readApiResponse(await apiFetch(
         `/api/v1/farms/${farm.id}/operational-area`,
         { farmId: farm.id },
       ));
@@ -157,6 +132,10 @@ export default function FarmsPage() {
       setEditArea(areaPayload.data);
       setEditAreaDraft(emptyAreaDraft());
     } catch (error) {
+      console.error('Falha ao carregar a fazenda para edição.', {
+        endpoint: `/api/v1/farms/${farm.id}/operational-area`,
+        error,
+      });
       setFormError(error.message);
     } finally {
       setSaving(false);
@@ -185,7 +164,7 @@ export default function FarmsPage() {
       } : {}),
     };
     try {
-      await readResponse(await apiFetch(`/api/v1/farms/${editFarmId}`, {
+      await readApiResponse(await apiFetch(`/api/v1/farms/${editFarmId}`, {
         method: 'PATCH',
         farmId: editFarmId,
         headers: { 'Content-Type': 'application/json' },

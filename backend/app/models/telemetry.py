@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, DateTime, Float, ForeignKey
+from sqlalchemy import BigInteger, String, DateTime, Float, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +18,18 @@ class MeasurementType(Base):
 
 class TelemetryReading(Base):
     __tablename__ = "telemetry_readings"
+    __table_args__ = (
+        Index(
+            "uq_simulated_telemetry_event",
+            "machine_id",
+            "farm_id",
+            "measurement_type_id",
+            "recorded_at",
+            unique=True,
+            postgresql_where=text("source = 'SIMULATED'"),
+            sqlite_where=text("source = 'SIMULATED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     machine_id: Mapped[int] = mapped_column(ForeignKey("machines.id"), nullable=False, index=True)
@@ -25,10 +37,24 @@ class TelemetryReading(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     value: Mapped[float] = mapped_column(Float, nullable=False)
     farm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="REAL", server_default=text("'REAL'")
+    )
 
 
 class MachineLocation(Base):
     __tablename__ = "machine_locations"
+    __table_args__ = (
+        Index(
+            "uq_simulated_location_event",
+            "machine_id",
+            "farm_id",
+            "recorded_at",
+            unique=True,
+            postgresql_where=text("source = 'SIMULATED'"),
+            sqlite_where=text("source = 'SIMULATED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     machine_id: Mapped[int] = mapped_column(ForeignKey("machines.id"), nullable=False, index=True)
@@ -36,6 +62,9 @@ class MachineLocation(Base):
     latitude: Mapped[float] = mapped_column(Float, nullable=False)
     longitude: Mapped[float] = mapped_column(Float, nullable=False)
     farm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="REAL", server_default=text("'REAL'")
+    )
 
 
 class RoutePlan(Base):

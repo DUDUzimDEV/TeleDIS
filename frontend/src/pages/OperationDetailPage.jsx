@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Activity, ArrowLeft, MapPinned, RefreshCw, Route as RouteIcon } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -10,10 +10,12 @@ import StatusBadge from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { formatDateTime, geoLineToLeaflet } from '../utils/geoData';
+import { getCommunicationStatus, getLatestTimestamp } from '../utils/liveStatus';
 import { getOperationActions } from '../utils/operationWorkflow';
 
 const asList = (value) => Array.isArray(value) ? value : [];
 const activeStatuses = new Set(['EM_EXECUCAO', 'INTERROMPIDA']);
+const LIVE_REFRESH_INTERVAL_MS = 5000;
 const fieldName = (operation) => operation?.field_name || `Talhão ${operation?.field_id ?? '—'}`;
 const formatMeters = (value) => value == null
   ? 'Indisponível'
@@ -31,13 +33,45 @@ export default function OperationDetailPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [occurrence, setOccurrence] = useState({ occurrence_type: 'PROBLEMA_VIA', description: '' });
-  const operationResource = useApiResource(`/api/v1/operations/${operationId}`, refresh);
+  const operationResource = useApiResource(
+    `/api/v1/operations/${operationId}`,
+    refresh,
+    { pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS },
+  );
   const operation = operationResource.data;
   const isExecuting = activeStatuses.has(operation?.status);
   const locationsResource = useApiResource(
     `/api/v1/operations/${operationId}/locations`,
     locationRefresh,
-    { enabled: Boolean(operation?.started_at && operation?.machine_id) },
+    {
+      enabled: Boolean(operation?.started_at && operation?.machine_id && can('operations.history')),
+      pollingIntervalMs: isExecuting ? LIVE_REFRESH_INTERVAL_MS : 0,
+    },
+  );
+  const latestLocationResource = useApiResource(
+    operation?.machine_id ? `/api/v1/locations/${operation.machine_id}?limit=1` : '',
+    0,
+    { enabled: Boolean(operation?.machine_id && can('machines.view')), pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS },
+  );
+  const machineTelemetryResource = useApiResource(
+    operation?.machine_id ? `/api/v1/telemetry/${operation.machine_id}` : '',
+    0,
+    {
+      enabled: Boolean(operation?.machine_id && can('telemetry.history')),
+      pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+    },
+  );
+  const telemetryResource = useApiResource('/api/v1/telemetry', 0, {
+    enabled: can('telemetry.view') && !can('telemetry.history'),
+    pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+  });
+  const machineContextResource = useApiResource(
+    operation?.machine_id ? `/api/v1/simulator/machines/${operation.machine_id}/context` : '',
+    0,
+    {
+      enabled: Boolean(operation?.machine_id && can('machines.view')),
+      pollingIntervalMs: isExecuting ? LIVE_REFRESH_INTERVAL_MS : 0,
+    },
   );
   const historyResource = useApiResource(
     `/api/v1/operations/${operationId}/history`,
@@ -65,19 +99,19 @@ export default function OperationDetailPage() {
     { enabled: Boolean(operation && can('road_problems.view')) },
   );
 
-  useEffect(() => {
-    if (!isExecuting) return undefined;
-    const timer = window.setInterval(() => setLocationRefresh((value) => value + 1), 10000);
-    return () => window.clearInterval(timer);
-  }, [isExecuting]);
-
   const fields = asList(fieldsResource.data).filter((field) => Number(field.id) === Number(operation?.field_id));
   const locations = asList(locationsResource.data?.locations);
   const actualRouteCoordinates = locations.map((location) => [
     Number(location.latitude),
     Number(location.longitude),
   ]).filter((point) => point.every(Number.isFinite));
-  const currentPosition = locationsResource.data?.current_position;
+  const latestLocation = asList(latestLocationResource.data?.historico)[0];
+  const latestTelemetry = can('telemetry.history')
+    ? asList(machineTelemetryResource.data?.historico)[0]
+    : asList(telemetryResource.data)
+      .filter((reading) => String(reading.maquina_id) === String(operation?.machine_id))
+      .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))[0];
+  const currentPosition = locationsResource.data?.current_position || latestLocation;
   const machines = currentPosition ? [{
     ...currentPosition,
     id: operation?.machine_id,
@@ -87,11 +121,20 @@ export default function OperationDetailPage() {
   }] : [];
   const routes = historyResource.data?.routes || [];
   const latestRoute = routes[routes.length - 1];
-  const plannedRouteCoordinates = geoLineToLeaflet(latestRoute?.route_geometry?.geometry);
+  const plannedRouteCoordinates = geoLineToLeaflet(latestRoute?.route_geometry);
   const roadProblems = asList(problemsResource.data).filter(
     (problem) => !['RESOLVIDO', 'INATIVO'].includes(problem.status),
   );
   const comparison = locationsResource.data?.comparison;
+  const communicationTimestamp = getLatestTimestamp(
+    latestLocation?.timestamp,
+    asList(locationsResource.data?.locations).at(-1)?.recorded_at,
+    latestTelemetry?.timestamp,
+  );
+  const communicationStatus = getCommunicationStatus(communicationTimestamp);
+  const communicationSource = communicationTimestamp === getLatestTimestamp(latestLocation?.timestamp)
+    ? latestLocation?.source
+    : latestTelemetry?.source;
   const permissions = new Set([
     'operations.execute',
     'operations.assign',
@@ -220,9 +263,13 @@ export default function OperationDetailPage() {
       <section className="operation-map-panel">
         <header className="section-heading">
           <div><span className="section-overline">Contexto geográfico</span><h2>Rota planejada e execução GPS</h2></div>
-          {isExecuting ? <span className="live-indicator"><RefreshCw size={14} />Atualização a cada 10 s</span> : null}
+          {isExecuting ? <span className="live-indicator"><RefreshCw size={14} />Atualização a cada 5 s</span> : null}
         </header>
         {locationsResource.error ? <ErrorState message={locationsResource.error} onRetry={locationsResource.reload} /> : null}
+        {latestLocationResource.error ? <ErrorState message={latestLocationResource.error} onRetry={latestLocationResource.reload} /> : null}
+        {machineContextResource.error ? <ErrorState message={machineContextResource.error} onRetry={machineContextResource.reload} /> : null}
+        {machineTelemetryResource.error ? <ErrorState message={machineTelemetryResource.error} onRetry={machineTelemetryResource.reload} /> : null}
+        {telemetryResource.error ? <ErrorState message={telemetryResource.error} onRetry={telemetryResource.reload} /> : null}
         {fieldsResource.error ? <ErrorState message={fieldsResource.error} onRetry={fieldsResource.reload} /> : null}
         {roadsResource.error ? <ErrorState message={roadsResource.error} onRetry={roadsResource.reload} /> : null}
         {problemsResource.error ? <ErrorState message={problemsResource.error} onRetry={problemsResource.reload} /> : null}
@@ -248,32 +295,60 @@ export default function OperationDetailPage() {
           {can('roads.view') ? <span><i className="legend-line" />Estradas</span> : null}
           {can('road_problems.view') ? <span><i className="legend-dot legend-problem" />Problemas abertos</span> : null}
           <span><i className="operation-legend-planned" />Rota planejada</span>
-          <span><i className="operation-legend-actual" />Trajetória GPS</span>
+          <span><i className="operation-legend-actual" />{actualRouteCoordinates.length > 1 ? 'Trajetória GPS' : 'Ponto GPS da operação'}</span>
           <span><i className="legend-dot legend-machine" />Última posição</span>
         </div>
-        {!plannedRouteCoordinates.length && !actualRouteCoordinates.length ? (
+        {actualRouteCoordinates.length === 1 ? (
+          <p className="operation-data-note">A API retornou 1 ponto GPS no intervalo desta operação; não há amostras suficientes para desenhar uma trajetória.</p>
+        ) : null}
+        {operation.started_at && !can('operations.history') ? (
+          <p className="operation-data-note">Seu perfil não possui permissão para consultar a trilha GPS e as métricas históricas desta operação.</p>
+        ) : null}
+        {can('operations.history') && !plannedRouteCoordinates.length && !actualRouteCoordinates.length ? (
           <p className="operation-data-note">Ainda não há rota calculada nem amostras GPS vinculadas ao intervalo desta operação.</p>
+        ) : null}
+        {operation.machine_id ? (
+          <div className="operation-live-meta">
+            <span className={`live-status live-status-${communicationStatus.toLowerCase()}`}>
+              Comunicação: {communicationStatus === 'ONLINE' ? 'online' : communicationStatus === 'STALE' ? 'desatualizada' : 'sem dados'}
+            </span>
+            <span>Última posição: {formatDateTime(communicationTimestamp)}</span>
+            <span>Origem GPS: {latestLocation?.source === 'SIMULATED' ? 'DADO SIMULADO' : latestLocation?.source === 'REAL' ? 'DADO REAL' : 'Não informada'}</span>
+            <span>Origem da comunicação: {communicationSource === 'SIMULATED' ? 'DADO SIMULADO' : communicationSource === 'REAL' ? 'DADO REAL' : 'Não informada'}</span>
+            <span>Estado operacional: {machineContextResource.data?.operation_state || operation.status.replaceAll('_', ' ')}</span>
+            {isExecuting && machineContextResource.data?.route_progress != null
+              && Number.isFinite(Number(machineContextResource.data.route_progress))
+              ? <span>Progresso da rota: {(Number(machineContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</span>
+              : null}
+            {can('telemetry.view') ? <Link to={`/telemetria?machineId=${operation.machine_id}`}>Abrir telemetria da máquina</Link> : null}
+          </div>
         ) : null}
       </section>
 
       <section className="operation-comparison-panel">
         <header className="section-heading"><div><span className="section-overline">Planejado × realizado</span><h2>Métricas de execução</h2></div><RouteIcon size={18} /></header>
-        {locationsResource.loading ? <LoadingState label="Calculando métricas com as posições GPS disponíveis..." /> : null}
-        {locationsResource.error ? null : comparison?.sufficient_data || comparison?.adherence_sufficient_data ? (
-          <div className="operation-metrics-grid">
-            <Metric label="Distância planejada" value={formatMeters(comparison.planned_distance_m)} />
-            <Metric label="Distância observada" value={formatMeters(comparison.actual_distance_m)} />
-            <Metric label="Diferença de distância" value={formatMeters(comparison.distance_difference_m)} />
-            <Metric label="Duração planejada" value={formatSeconds(comparison.planned_duration_s)} />
-            <Metric label="Duração observada" value={formatSeconds(comparison.actual_duration_s)} />
-            <Metric label="Aderência aproximada" value={comparison.route_adherence_pct == null ? 'Dados insuficientes' : `${Number(comparison.route_adherence_pct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`} />
-            <Metric label={`Pontos fora de ${comparison.deviation_tolerance_m} m`} value={comparison.points_outside_tolerance ?? 'Dados insuficientes'} />
-            <Metric label="Desvio máximo" value={formatMeters(comparison.max_deviation_m)} />
-          </div>
-        ) : !locationsResource.loading ? (
-          <p className="operation-data-note">Dados insuficientes para comparar. É necessário haver rota planejada e/ou amostras GPS no período da operação.</p>
-        ) : null}
-        <p className="operation-data-note">Aderência calculada pela distância geodésica de cada amostra GPS à linha planejada, com tolerância configurável de {comparison?.deviation_tolerance_m ?? 25} m e {comparison?.gps_sample_count ?? 0} amostras consideradas. A linha exibida no mapa é limitada a 1.500 pontos distribuídos no percurso; métricas usam todas as amostras. Velocidade e direção por amostra não são fornecidas pelo registro de localização.</p>
+        {operation.started_at && !can('operations.history') ? (
+          <p className="operation-data-note">A comparação de trajetória exige a permissão de histórico de operações.</p>
+        ) : (
+          <>
+            {locationsResource.loading ? <LoadingState label="Calculando métricas com as posições GPS disponíveis..." /> : null}
+            {locationsResource.error ? null : comparison?.sufficient_data || comparison?.adherence_sufficient_data ? (
+              <div className="operation-metrics-grid">
+                <Metric label="Distância planejada" value={formatMeters(comparison.planned_distance_m)} />
+                <Metric label="Distância observada" value={formatMeters(comparison.actual_distance_m)} />
+                <Metric label="Diferença de distância" value={formatMeters(comparison.distance_difference_m)} />
+                <Metric label="Duração planejada" value={formatSeconds(comparison.planned_duration_s)} />
+                <Metric label="Duração observada" value={formatSeconds(comparison.actual_duration_s)} />
+                <Metric label="Aderência aproximada" value={Number(comparison.gps_sample_count) < 2 || comparison.route_adherence_pct == null ? 'Dados insuficientes' : `${Number(comparison.route_adherence_pct).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`} />
+                <Metric label={`Pontos fora de ${comparison.deviation_tolerance_m} m`} value={comparison.points_outside_tolerance ?? 'Dados insuficientes'} />
+                <Metric label="Desvio máximo" value={formatMeters(comparison.max_deviation_m)} />
+              </div>
+            ) : !locationsResource.loading ? (
+              <p className="operation-data-note">Dados insuficientes para comparar. É necessário haver rota planejada e/ou amostras GPS no período da operação.</p>
+            ) : null}
+            <p className="operation-data-note">Aderência calculada pela distância geodésica de cada amostra GPS à linha planejada, com tolerância configurável de {comparison?.deviation_tolerance_m ?? 25} m e {comparison?.gps_sample_count ?? 0} amostras consideradas. A linha exibida no mapa é limitada a 1.500 pontos distribuídos no percurso; métricas usam todas as amostras. Velocidade e direção por amostra não são fornecidas pelo registro de localização.</p>
+          </>
+        )}
       </section>
 
       <section className="operation-timeline-panel">
@@ -281,12 +356,13 @@ export default function OperationDetailPage() {
         {historyResource.error ? <ErrorState message={historyResource.error} onRetry={historyResource.reload} /> : null}
         {occurrencesResource.error ? <ErrorState message={occurrencesResource.error} onRetry={occurrencesResource.reload} /> : null}
         {historyResource.loading ? <LoadingState label="Carregando eventos da operação..." /> : null}
-        {routes.length ? <div className="operation-route-history">
+        {!can('operations.history') ? <p className="operation-data-note">Seu perfil não possui permissão para consultar o histórico desta operação.</p> : null}
+        {can('operations.history') && routes.length ? <div className="operation-route-history">
           {routes.map((route) => <article key={route.version}><strong>Rota v{route.version}</strong><span>{formatMeters(route.distance_m)} · calculada {formatDateTime(route.created_at)}</span></article>)}
-        </div> : <p className="operation-data-note">Nenhuma versão de rota foi registrada.</p>}
-        {timeline.length ? <ol className="operation-timeline">
+        </div> : can('operations.history') ? <p className="operation-data-note">Nenhuma versão de rota foi registrada.</p> : null}
+        {can('operations.history') && timeline.length ? <ol className="operation-timeline">
           {timeline.map((event) => <li key={event.id}><time>{formatDateTime(event.at)}</time><div><strong>{event.title}</strong><p>{event.detail}</p></div></li>)}
-        </ol> : !historyResource.loading ? <EmptyState title="Sem eventos registrados" description="Transições e ocorrências aparecerão aqui quando forem registradas." icon={MapPinned} /> : null}
+        </ol> : can('operations.history') && !historyResource.loading ? <EmptyState title="Sem eventos registrados" description="Transições e ocorrências aparecerão aqui quando forem registradas." icon={MapPinned} /> : null}
       </section>
     </div>
   );

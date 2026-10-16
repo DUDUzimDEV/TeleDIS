@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { CircleMarker, MapContainer, Marker, Polygon, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import { divIcon, latLngBounds } from 'leaflet';
 
@@ -11,17 +11,19 @@ const structureIcon = divIcon({
   iconAnchor: [9, 9],
 });
 
-function MapFitter({ coordinates }) {
+function MapFitter({ coordinates, fitKey }) {
   const map = useMap();
+  const lastFitKey = useRef('');
 
   useEffect(() => {
-    if (!coordinates.length) return;
+    if (!coordinates.length || fitKey === lastFitKey.current) return;
+    lastFitKey.current = fitKey;
     const frame = requestAnimationFrame(() => {
       map.invalidateSize({ pan: false });
       map.fitBounds(latLngBounds(coordinates), { padding: [28, 28], maxZoom: 15 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [coordinates, map]);
+  }, [coordinates, fitKey, map]);
 
   return null;
 }
@@ -35,6 +37,8 @@ export default function EntityMap({
   routeCoordinates = [],
   plannedRouteCoordinates = [],
   actualRouteCoordinates = [],
+  routeSegmentIds = [],
+  affectedSegmentIds = [],
   selectedFieldId,
   selectedMachineId,
   onSelectField,
@@ -42,6 +46,7 @@ export default function EntityMap({
   visibleLayers = {},
   className = '',
   zoom = 5,
+  fitBoundsKey,
 }) {
   const fieldPoints = visibleLayers.fields === false ? [] : fields.flatMap((field) => geoPolygonToLeaflet(field.geometry));
   const roadPoints = visibleLayers.roads === false ? [] : roads.flatMap((road) => geoLineToLeaflet(road.geometry));
@@ -49,11 +54,20 @@ export default function EntityMap({
   const problemPoints = visibleLayers.problems === false ? [] : roadProblems.map((item) => geoPointToLeaflet(item.geometry)).filter(Boolean);
   const machinePoints = visibleLayers.machines === false ? [] : machines.map((item) => [item.latitude, item.longitude]).filter((point) => point.every(Number.isFinite));
   const plannedCoordinates = plannedRouteCoordinates.length ? plannedRouteCoordinates : routeCoordinates;
-  const allCoordinates = [
+  const staticCoordinates = [
     ...fieldPoints,
     ...roadPoints,
     ...structurePoints,
     ...problemPoints,
+    ...plannedCoordinates,
+  ];
+  const fitCoordinates = staticCoordinates.length ? staticCoordinates : machinePoints;
+  const coordinatesKey = staticCoordinates.length
+    ? JSON.stringify(staticCoordinates)
+    : machinePoints.length ? 'initial-machine-positions' : '';
+  const fitKey = fitBoundsKey == null ? coordinatesKey : `${coordinatesKey}:${fitBoundsKey}`;
+  const allCoordinates = [
+    ...staticCoordinates,
     ...machinePoints,
     ...plannedCoordinates,
     ...actualRouteCoordinates,
@@ -67,12 +81,30 @@ export default function EntityMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <MapFitter coordinates={allCoordinates} />
+        <MapFitter coordinates={fitCoordinates} fitKey={fitKey} />
         {visibleLayers.roads !== false ? roads.map((road) => {
           const points = geoLineToLeaflet(road.geometry);
+          const isRouteSegment = routeSegmentIds.some((id) => String(id) === String(road.id));
+          const isAffectedSegment = affectedSegmentIds.some((id) => String(id) === String(road.id));
           return points.length > 1 ? (
-            <Polyline key={`road-${road.id}`} positions={points} pathOptions={{ color: '#8a7652', weight: 4, opacity: 0.8 }}>
-              <Popup><strong>{road.nome || `Estrada ${road.id}`}</strong><br />{road.tipo || 'Via'}</Popup>
+            <Polyline
+              key={`road-${road.id}`}
+              positions={points}
+              pathOptions={{
+                color: isAffectedSegment ? '#c55834' : isRouteSegment ? '#1464c0' : road.is_blocked ? '#a8aaa8' : '#8a7652',
+                weight: isRouteSegment ? 6 : 4,
+                opacity: isRouteSegment || isAffectedSegment ? 0.98 : 0.8,
+                dashArray: road.is_blocked ? '5 6' : undefined,
+              }}
+            >
+              <Popup>
+                <strong>{road.nome || `Estrada ${road.id}`}</strong><br />
+                {road.tipo || 'Via'}
+                {road.length_m != null ? <><br />{Number(road.length_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</> : null}
+                {road.is_blocked ? <><br /><strong>Trecho bloqueado</strong></> : null}
+                {isRouteSegment ? <><br /><strong>Parte da rota calculada</strong></> : null}
+                {isAffectedSegment ? <><br /><strong>Problema associado à rota</strong></> : null}
+              </Popup>
             </Polyline>
           ) : null;
         }) : null}
@@ -126,7 +158,11 @@ export default function EntityMap({
               eventHandlers={{ click: () => onSelectMachine?.(machine.maquina_id) }}
               pathOptions={{ color: '#fff', weight: 2, fillColor: '#2575a8', fillOpacity: 1 }}
             >
-              <Popup><strong>{machine.nome || `Máquina ${machine.maquina_id}`}</strong><br />{machine.status || 'Localização registrada'}</Popup>
+              <Popup>
+                <strong>{machine.nome || `Máquina ${machine.maquina_id}`}</strong>
+                <br />{machine.status || 'Localização registrada'}
+                {machine.source === 'SIMULATED' ? <><br /><strong>DADO SIMULADO</strong></> : null}
+              </Popup>
             </CircleMarker>
           );
         }) : null}

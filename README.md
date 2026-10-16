@@ -81,7 +81,7 @@ Consulte [simulator/README.md](simulator/README.md) para dependências, variáve
 - Senhas em hash;
 - JWT para autenticação;
 - Validação de entrada e permissões;
-- CORS e rate limit configurados;
+- CORS configurado; rate limiting ainda não implementado (não exponha a API publicamente sem proteção adicional);
 - `.env` não versionado.
 
 ## Documentação

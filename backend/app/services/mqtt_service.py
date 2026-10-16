@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.mqtt.client import MqttClient
 from app.repositories.telemetry_repository import TelemetryRepository
 from app.services.telemetry_service import TelemetryService
+from app.services.spatial_validation_service import SpatialValidationError
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -122,6 +123,14 @@ class MqttService:
                 record["valor"],
             )
             return record
+        except SpatialValidationError as exc:
+            logger.warning(
+                "MQTT: localização simulada rejeitada tópico=%s código=%s motivo=%s",
+                topic,
+                exc.code,
+                exc,
+            )
+            return None
         except Exception:
             logger.exception("MQTT: erro ao processar mensagem tópico=%s", topic)
             return None

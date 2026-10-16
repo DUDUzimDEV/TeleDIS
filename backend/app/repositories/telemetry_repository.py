@@ -1,31 +1,19 @@
 from datetime import datetime, timezone
 
-from app.config import get_settings
+from sqlalchemy.exc import IntegrityError
+
 from app.database import SessionLocal
 from app.models.machine import Machine
 from app.models.telemetry import MachineLocation, MeasurementType, TelemetryReading
-from app.models.user import Farm
+from app.services.spatial_validation_service import spatial_validation_service
 
 
 class TelemetryRepository:
     @staticmethod
     def _ensure_machine(db, machine_id: int) -> Machine:
         machine = db.get(Machine, machine_id)
-        if machine is not None:
-            return machine
-
-        settings = get_settings()
-        farm = db.query(Farm).filter(Farm.code == settings.initial_farm_code).one_or_none()
-        if farm is None:
-            raise RuntimeError("Não há fazenda inicial configurada para associar a máquina recebida.")
-        machine = Machine(
-            name=f"Máquina {machine_id}",
-            code=f"M-{machine_id}",
-            status="active",
-            farm_id=farm.id,
-        )
-        db.add(machine)
-        db.flush()
+        if machine is None:
+            raise LookupError(f"Máquina {machine_id} não cadastrada.")
         return machine
 
     @staticmethod
@@ -62,13 +50,6 @@ class TelemetryRepository:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    def ensure_machine(self, machine_id: int) -> Machine:
-        with SessionLocal() as db:
-            machine = self._ensure_machine(db, machine_id)
-            db.commit()
-            db.refresh(machine)
-            return machine
-
     def get_or_create_measurement(self, metric: str, unit: str) -> MeasurementType:
         with SessionLocal() as db:
             measurement = self._get_or_create_measurement(db, metric, unit)
@@ -82,6 +63,7 @@ class TelemetryRepository:
         unit = str(payload.get("unidade") or payload.get("unit") or "C")
         value = float(payload["valor"])
         parsed = self._parse_timestamp(payload.get("timestamp"))
+        source = str(payload.get("source") or "REAL")
 
         with SessionLocal() as db:
             machine = self._ensure_machine(db, machine_id)
@@ -93,10 +75,25 @@ class TelemetryRepository:
                 recorded_at=parsed,
                 value=value,
                 farm_id=machine.farm_id,
+                source=source,
             )
             db.add(reading)
-            db.commit()
-            db.refresh(reading)
+            try:
+                db.commit()
+                db.refresh(reading)
+            except IntegrityError:
+                db.rollback()
+                if source != "SIMULATED":
+                    raise
+                reading = db.query(TelemetryReading).filter(
+                    TelemetryReading.machine_id == machine.id,
+                    TelemetryReading.farm_id == machine.farm_id,
+                    TelemetryReading.measurement_type_id == measurement.id,
+                    TelemetryReading.recorded_at == parsed,
+                    TelemetryReading.source == source,
+                ).one_or_none()
+                if reading is None or reading.value != value:
+                    raise ValueError("Conflito de identidade em evento de telemetria simulada.")
 
             return {
                 "id": reading.id,
@@ -105,24 +102,50 @@ class TelemetryRepository:
                 "valor": reading.value,
                 "unidade": measurement.unit,
                 "timestamp": self._timestamp_string(reading.recorded_at),
+                "source": reading.source,
             }
 
     def create_location(self, payload: dict):
         machine_id = int(payload["maquina_id"])
         recorded_at = self._parse_timestamp(payload["timestamp"])
+        latitude = float(payload["latitude"])
+        longitude = float(payload["longitude"])
+        source = str(payload.get("source") or "REAL")
 
         with SessionLocal() as db:
             machine = self._ensure_machine(db, machine_id)
+            if source == "SIMULATED":
+                spatial_validation_service.validate_simulated_location(
+                    db, machine.farm_id, latitude, longitude
+                )
             location = MachineLocation(
                 machine_id=machine.id,
                 recorded_at=recorded_at,
-                latitude=float(payload["latitude"]),
-                longitude=float(payload["longitude"]),
+                latitude=latitude,
+                longitude=longitude,
                 farm_id=machine.farm_id,
+                source=source,
             )
             db.add(location)
-            db.commit()
-            db.refresh(location)
+            try:
+                db.commit()
+                db.refresh(location)
+            except IntegrityError:
+                db.rollback()
+                if source != "SIMULATED":
+                    raise
+                location = db.query(MachineLocation).filter(
+                    MachineLocation.machine_id == machine.id,
+                    MachineLocation.farm_id == machine.farm_id,
+                    MachineLocation.recorded_at == recorded_at,
+                    MachineLocation.source == source,
+                ).one_or_none()
+                if (
+                    location is None
+                    or location.latitude != latitude
+                    or location.longitude != longitude
+                ):
+                    raise ValueError("Conflito de identidade em evento de localização simulada.")
 
             return {
                 "id": location.id,
@@ -130,6 +153,7 @@ class TelemetryRepository:
                 "timestamp": self._timestamp_string(location.recorded_at),
                 "latitude": location.latitude,
                 "longitude": location.longitude,
+                "source": location.source,
             }
 
     def list_recent(
@@ -158,6 +182,7 @@ class TelemetryRepository:
                     "valor": reading.value,
                     "unidade": measurement.unit,
                     "timestamp": self._timestamp_string(reading.recorded_at),
+                    "source": reading.source,
                 }
                 for reading, measurement in rows
             ]
@@ -178,6 +203,7 @@ class TelemetryRepository:
                     "timestamp": self._timestamp_string(location.recorded_at),
                     "latitude": location.latitude,
                     "longitude": location.longitude,
+                    "source": location.source,
                 }
                 for location in rows
             ]

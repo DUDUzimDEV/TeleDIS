@@ -1,18 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from app.core.security import ensure_machine_access, require_permission
 from app.database import SessionLocal
 from app.repositories.machine_repository import MachineRepository
-from app.schemas.machine import MachineCreate
+from app.schemas.machine import MachineCreate, MachineUpdate
 from app.services.audit_service import record_audit
 
 router = APIRouter(tags=["machines"])
 repository = MachineRepository()
-
-
-class MachineStatusUpdate(BaseModel):
-    status: str = Field(..., min_length=2, max_length=30)
 
 
 @router.get("")
@@ -38,24 +34,38 @@ def create_machine(
     request: Request,
     context: dict = Depends(require_permission("machines.create")),
 ):
-    machine = repository.create(payload, context["farm_id"])
+    try:
+        machine = repository.create(payload, context["farm_id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="O código da máquina já está cadastrado.") from exc
     with SessionLocal.begin() as db:
         record_audit(db, context=context, action="machines.create", resource="machine",
-                     resource_id=machine["id"], request=request)
+                     resource_id=machine["id"], request=request,
+                     details={"name": machine["nome"], "code": machine["code"]})
     return {"success": True, "data": machine}
 
 
 @router.patch("/{machine_id}")
-def update_machine_status(
+def update_machine(
     machine_id: int,
-    payload: MachineStatusUpdate,
+    payload: MachineUpdate,
     request: Request,
     context: dict = Depends(require_permission("machines.update")),
 ):
-    machine = repository.update_status(machine_id, context["farm_id"], payload.status)
+    changes = payload.dict(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Informe ao menos um campo para atualizar.")
+    try:
+        machine = repository.update(machine_id, context["farm_id"], changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="O código da máquina já está cadastrado.") from exc
     if machine is None:
         raise HTTPException(status_code=404, detail="Máquina não encontrada.")
     with SessionLocal.begin() as db:
         record_audit(db, context=context, action="machines.update", resource="machine",
-                     resource_id=machine_id, request=request, details={"status": payload.status})
+                     resource_id=machine_id, request=request, details=changes)
     return {"success": True, "data": machine}

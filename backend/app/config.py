@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import BaseSettings, Field
+from pydantic import BaseSettings, Field, root_validator
 
 
 class Settings(BaseSettings):
@@ -49,6 +49,24 @@ class Settings(BaseSettings):
     route_penalty_medium: float = Field(default=1.30, ge=1, alias="ROUTE_PENALTY_MEDIUM")
     route_penalty_high: float = Field(default=1.70, ge=1, alias="ROUTE_PENALTY_HIGH")
     route_penalty_critical: float = Field(default=3.00, ge=1, alias="ROUTE_PENALTY_CRITICAL")
+
+    @root_validator
+    def require_production_credentials(cls, values):
+        if values.get("api_env", "").lower() != "production":
+            return values
+
+        insecure_settings = []
+        for name in ("secret_key", "jwt_secret"):
+            secret = values.get(name, "")
+            if secret == "change-me" or len(secret.encode("utf-8")) < 32:
+                insecure_settings.append(name)
+        if values.get("default_admin_password") == "Admin@123":
+            insecure_settings.append("default_admin_password")
+
+        if insecure_settings:
+            names = ", ".join(insecure_settings)
+            raise ValueError(f"Unsafe production credentials configured: {names}.")
+        return values
 
     class Config:
         env_file = ".env"

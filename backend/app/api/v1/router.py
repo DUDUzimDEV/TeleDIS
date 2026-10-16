@@ -15,6 +15,7 @@ from app.api.v1.endpoints.structures import router as structures_router
 from app.api.v1.endpoints.telemetria import router as telemetry_router
 from app.api.v1.endpoints.teams import router as teams_router
 from app.api.v1.endpoints.operations import router as operations_router
+from app.api.v1.endpoints.simulator import router as simulator_router
 from app.api.v1.endpoints.users import router as users_router
 
 api_router = APIRouter()
@@ -34,3 +35,4 @@ api_router.include_router(routes_router, prefix="/routes")
 api_router.include_router(structures_router, prefix="/structures")
 api_router.include_router(teams_router, prefix="/teams")
 api_router.include_router(operations_router, prefix="/operations")
+api_router.include_router(simulator_router, prefix="/simulator")

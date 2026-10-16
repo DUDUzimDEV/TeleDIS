@@ -78,3 +78,7 @@ Frontend / Dashboard
 A estrutura atual implementa uma base real para as próximas etapas, com endpoints, autenticação inicial, documentação e ambiente Docker.
 
 O motor operacional de rotas usa tabelas próprias (`network_nodes` e `network_segments`), mantendo separadas as tabelas antigas de planos e pontos de rota (`route_plans` e `route_locations`). Consulte [routes.md](./routes.md) para o fluxo e limitações atuais.
+
+A fundação do simulador, os campos de origem da telemetria e as dependências de
+integração com operação, área espacial e MQTT estão descritos em
+[simulator.md](./simulator.md).

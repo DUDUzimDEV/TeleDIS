@@ -2,20 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Eraser, Minus, Save } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
-import { apiFetch } from '../api/apiClient';
+import { apiFetch, readApiResponse } from '../api/apiClient';
 import OperationalAreaMap from '../components/map/OperationalAreaMap';
 import PageHeading from '../components/ui/PageHeading';
 import { ErrorState, LoadingState } from '../components/ui/PageState';
 import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { coordinatesFromPolygon, geometryFromPoints, validateOperationalArea } from '../utils/operationalArea';
-
-function responseError(payload, status) {
-  if (typeof payload?.detail === 'string') return payload.detail;
-  if (payload?.detail?.message) return payload.detail.message;
-  if (Array.isArray(payload?.detail)) return payload.detail.map((item) => item.msg).join(' ');
-  return `A solicitação falhou (HTTP ${status}).`;
-}
 
 export default function OperationalAreaPage() {
   const { farmId } = useParams();
@@ -91,8 +84,7 @@ export default function OperationalAreaPage() {
           }),
           signal: controller.signal,
         });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(responseError(payload, response.status));
+        const payload = await readApiResponse(response);
         if (controller.signal.aborted) return;
         setPreview({
           ...payload.data,
@@ -102,6 +94,7 @@ export default function OperationalAreaPage() {
         setConflicts(payload.data.conflicts || []);
       } catch (error) {
         if (error.name !== 'AbortError' && !controller.signal.aborted) {
+          console.error('Falha ao validar a área operacional.', { endpoint: `${basePath}/preview`, error });
           setPreviewError(error.message || 'Não foi possível validar o desenho.');
         }
       }
@@ -168,11 +161,7 @@ export default function OperationalAreaPage() {
           proximity_radius_m: Number(radiusDraft),
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        setConflicts(payload.detail?.resources || []);
-        throw new Error(responseError(payload, response.status));
-      }
+      const payload = await readApiResponse(response);
       setGeometryDraft(payload.data.geometry);
       setDraftPoints(coordinatesFromPolygon(payload.data.geometry));
       setRadiusDraft(Number(payload.data.proximity_radius_m));
@@ -181,6 +170,8 @@ export default function OperationalAreaPage() {
       setSuccess('Área operacional e zona de proximidade salvas.');
       areaResource.reload();
     } catch (error) {
+      setConflicts(error.payload?.detail?.resources || []);
+      console.error('Falha ao salvar a área operacional.', { endpoint: basePath, error });
       setRequestError(error.message || 'Não foi possível salvar a área operacional.');
     } finally {
       setSaving(false);
@@ -196,17 +187,15 @@ export default function OperationalAreaPage() {
     setSuccess('');
     try {
       const response = await apiFetch(basePath, { method: 'DELETE' });
-      const payload = await response.json();
-      if (!response.ok) {
-        setConflicts(payload.detail?.resources || []);
-        throw new Error(responseError(payload, response.status));
-      }
+      const payload = await readApiResponse(response);
       setGeometryDraft(null);
       setDraftPoints([]);
       setIsEditing(false);
       setSuccess('Área removida. Nenhum recurso foi excluído.');
       areaResource.reload();
     } catch (error) {
+      setConflicts(error.payload?.detail?.resources || []);
+      console.error('Falha ao remover a área operacional.', { endpoint: basePath, error });
       setRequestError(error.message || 'Não foi possível remover a área.');
     } finally {
       setSaving(false);

@@ -18,11 +18,12 @@
 
 ## Medidas e autorização
 
-- rate limiting em produção;
-- TLS/HTTPS via Nginx;
-- acesso interno do banco e do MQTT sem exposição pública;
-- no mínimo, portas 22, 80 e 443 abertas externamente;
-- firewalls restritivos.
+- Rate limiting ainda não está implementado. Não exponha a API à Internet sem uma proteção de abuso adequada.
+- O Nginx do Docker Compose de desenvolvimento atende somente HTTP; TLS/HTTPS precisa ser configurado antes de uma implantação pública.
+- O Compose de desenvolvimento publica as portas do PostgreSQL, MQTT, backend e frontend no host. Restrinja essas portas por firewall ou remova os mapeamentos antes de implantar em uma rede não confiável.
+- Use firewalls restritivos e exponha externamente somente os serviços necessários.
+
+Os valores padrão de `SECRET_KEY`, `JWT_SECRET` e `DEFAULT_ADMIN_PASSWORD` servem apenas para desenvolvimento. Quando `API_ENV=production`, a API rejeita os valores padrão, exige chaves com pelo menos 32 bytes e exige que a senha de bootstrap seja alterada.
 
 ## Regras
 
@@ -42,5 +43,6 @@ O proprietário não pode ser removido ou rebaixado pela API comum de edição d
 ## Limitações atuais
 
 - O protocolo MQTT legado não contém um identificador confiável de fazenda em cada mensagem; novas máquinas recebidas sem cadastro são associadas à fazenda inicial. Não use esse fluxo para provisionar máquinas de outras fazendas sem um mecanismo de associação autenticado.
+- O broker MQTT exige credenciais para publicação; proteja credenciais e tráfego de rede, pois o Compose local não configura TLS no broker.
 - Ainda não há API persistente para atribuição/execução de rotas, comunicação com coordenação, paradas ou manutenção iniciada pelo operador. A interface não simula essas operações.
 - A migration multi-tenant precisa ser aplicada explicitamente em volumes já existentes. Seu backfill atribui os registros legados à fazenda padrão e não consegue determinar a fazenda real a partir do schema anterior; confirme a associação e faça backup antes de aplicá-la. Veja [database.md](./database.md).

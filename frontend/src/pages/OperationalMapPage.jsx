@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { latLngBounds } from 'leaflet';
-import { Layers3, MapPin, Tractor, TriangleAlert } from 'lucide-react';
+import { Layers3, MapPin, Sprout, Tractor, TriangleAlert } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import FieldFormModal from '../components/map/FieldFormModal';
 import MapToolbar from '../components/map/MapToolbar';
@@ -15,9 +16,11 @@ import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { snapPointToRoad } from '../utils/roadSnapping';
 import { routeErrorMessage, routeResponseToMap } from '../utils/routeUtils';
-import { formatDateTime } from '../utils/geoData';
+import { formatDateTime, geoLineToLeaflet } from '../utils/geoData';
+import { getCommunicationStatus, getLatestTimestamp } from '../utils/liveStatus';
 
 const ROAD_PROBLEM_SNAP_TOLERANCE_METERS = 30;
+const LIVE_REFRESH_INTERVAL_MS = 5000;
 
 const defaultForm = {
   name: 'Talhão 01',
@@ -94,11 +97,29 @@ function apiErrorMessage(payload, status, fallback) {
 }
 
 export default function OperationalMapPage() {
-  const { activeFarmId, can } = useAuth();
+  const { activeFarm, activeFarmId, can } = useAuth();
   const operationalAreaResource = useApiResource(
     activeFarmId ? `/api/v1/farms/${activeFarmId}/operational-area` : '',
     0,
     { enabled: Boolean(activeFarmId && can('farm.view')) },
+  );
+  const operationsResource = useApiResource(
+    '/api/v1/operations',
+    0,
+    { enabled: can('operations.view'), pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS },
+  );
+  const telemetryResource = useApiResource(
+    '/api/v1/telemetry',
+    0,
+    {
+      enabled: can('telemetry.view') && !can('telemetry.history'),
+      pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+    },
+  );
+  const locationsResource = useApiResource(
+    '/api/v1/locations?limit=1000',
+    0,
+    { enabled: can('machines.view'), pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS },
   );
   const [fields, setFields] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -153,11 +174,18 @@ export default function OperationalMapPage() {
   const [routeOrigin, setRouteOrigin] = useState(null);
   const [routeDestination, setRouteDestination] = useState(null);
   const [machines, setMachines] = useState([]);
-  const [machineLocations, setMachineLocations] = useState([]);
-  const [locationsError, setLocationsError] = useState('');
-  const [locationsLoadAttempt, setLocationsLoadAttempt] = useState(0);
   const [selectedMapMachineId, setSelectedMapMachineId] = useState(null);
+  const [selectedMapRoadId, setSelectedMapRoadId] = useState(null);
+  const [selectedMapStructureId, setSelectedMapStructureId] = useState(null);
+  const [selectedMapProblemId, setSelectedMapProblemId] = useState(null);
+  const [machineFilter, setMachineFilter] = useState('all');
+  const [machineStatusFilter, setMachineStatusFilter] = useState('all');
+  const [operationFilter, setOperationFilter] = useState('all');
+  const [structureTypeFilter, setStructureTypeFilter] = useState('all');
+  const [problemSeverityFilter, setProblemSeverityFilter] = useState('all');
   const [visibleLayers, setVisibleLayers] = useState({
+    operationalArea: true,
+    proximityZone: true,
     fields: true,
     roads: true,
     structures: true,
@@ -203,6 +231,144 @@ export default function OperationalMapPage() {
   }, [draftPoints, draftRoadPoints, drawingMode, drawingRoad, showStructureForm, structurePoint]);
 
   const selectedField = fields.find((field) => field.id === selectedFieldId) || null;
+  const operations = Array.isArray(operationsResource.data) ? operationsResource.data : [];
+  const locationRows = Array.isArray(locationsResource.data) ? locationsResource.data : [];
+  const machineLocationsById = new Map();
+  [...locationRows]
+    .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))
+    .forEach((location) => {
+      if (!machineLocationsById.has(String(location.maquina_id))) {
+        machineLocationsById.set(String(location.maquina_id), location);
+      }
+    });
+  const machineLocations = machines.map((machine) => {
+    const location = machineLocationsById.get(String(machine.id));
+    if (location) return { ...location, nome: machine.nome, status: machine.status };
+    const base = structures.find((structure) => String(structure.id) === String(machine.base_structure_id));
+    if (!base?.coordinates) return null;
+    return {
+      maquina_id: machine.id,
+      nome: machine.nome,
+      status: machine.status,
+      latitude: base.coordinates[0],
+      longitude: base.coordinates[1],
+      source: 'BASE',
+      coordinate_source: 'BASE',
+      base_name: base.nome,
+    };
+  }).filter(Boolean);
+  const machineStatuses = [...new Set(machines.map((machine) => machine.status).filter(Boolean))];
+  const mapMachineLocations = machineLocations.filter((location) => {
+    const machine = machines.find((item) => String(item.id) === String(location.maquina_id));
+    const matchesMachine = machineFilter === 'all' || String(location.maquina_id) === machineFilter;
+    const matchesStatus = machineStatusFilter === 'all' || machine?.status === machineStatusFilter;
+    const machineOperations = operations
+      .filter((item) => String(item.machine_id) === String(location.maquina_id))
+      .sort((left, right) => new Date(right.updated_at || right.created_at || 0) - new Date(left.updated_at || left.created_at || 0));
+    const operation = machineOperations.find((item) => String(item.id) === operationFilter)
+      || machineOperations.find((item) => !['CONCLUIDA', 'CANCELADA'].includes(item.status))
+      || machineOperations[0];
+    const matchesOperation = operationFilter === 'all' || String(operation?.id) === operationFilter;
+    return matchesMachine && matchesStatus && matchesOperation;
+  });
+  const mapStructures = structures.filter((structure) => (
+    structureTypeFilter === 'all' || structure.tipo === structureTypeFilter
+  ));
+  const mapRoadProblems = roadProblems.filter((problem) => (
+    problemSeverityFilter === 'all' || problem.gravidade === problemSeverityFilter
+  ));
+  const structureTypes = [...new Set(structures.map((structure) => structure.tipo).filter(Boolean))];
+  const problemSeverities = [...new Set(roadProblems.map((problem) => problem.gravidade).filter(Boolean))];
+  const selectedMapMachine = mapMachineLocations.find(
+    (machine) => String(machine.maquina_id) === String(selectedMapMachineId),
+  );
+  const selectedMapRoad = roads.find((road) => String(road.id) === String(selectedMapRoadId));
+  const selectedMapStructure = mapStructures.find((structure) => String(structure.id) === String(selectedMapStructureId));
+  const selectedMapProblem = mapRoadProblems.find((problem) => String(problem.id) === String(selectedMapProblemId));
+  const selectedMachineOperations = operations
+    .filter((operation) => Boolean(selectedMapMachine)
+      && String(operation.machine_id) === String(selectedMapMachine.maquina_id))
+    .sort((left, right) => new Date(right.updated_at || right.created_at || 0) - new Date(left.updated_at || left.created_at || 0));
+  const selectedMachineOperation = selectedMachineOperations.find((operation) => (
+    String(operation.id) === operationFilter
+  )) || selectedMachineOperations.find((operation) => (
+    !['CONCLUIDA', 'CANCELADA'].includes(operation.status)
+  )) || selectedMachineOperations[0] || null;
+  const selectedMachineTelemetryResource = useApiResource(
+    selectedMapMachineId ? `/api/v1/telemetry/${selectedMapMachineId}` : '',
+    0,
+    {
+      enabled: Boolean(selectedMapMachineId && can('telemetry.history')),
+      pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS,
+    },
+  );
+  const telemetry = can('telemetry.history')
+    ? Array.isArray(selectedMachineTelemetryResource.data?.historico)
+      ? selectedMachineTelemetryResource.data.historico
+      : []
+    : Array.isArray(telemetryResource.data) ? telemetryResource.data : [];
+  const selectedMachineReadings = telemetry
+    .filter((reading) => Boolean(selectedMapMachine)
+      && String(reading.maquina_id) === String(selectedMapMachine.maquina_id))
+    .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp));
+  const selectedMachineSpeed = selectedMachineReadings.find((reading) => (
+    /velocidade|speed/i.test(String(reading.metric || ''))
+  ));
+  const selectedTelemetryTimestamp = selectedMachineReadings[0]?.timestamp;
+  const selectedLastUpdate = getLatestTimestamp(
+    selectedMapMachine?.timestamp,
+    selectedTelemetryTimestamp,
+  );
+  const connectionStatus = getCommunicationStatus(selectedLastUpdate);
+  const machineContextResource = useApiResource(
+    selectedMapMachineId ? `/api/v1/simulator/machines/${selectedMapMachineId}/context` : '',
+    0,
+    {
+      enabled: Boolean(selectedMapMachineId && can('machines.view')),
+      pollingIntervalMs: ['EM_EXECUCAO', 'INTERROMPIDA'].includes(selectedMachineOperation?.status)
+        ? LIVE_REFRESH_INTERVAL_MS
+        : 0,
+    },
+  );
+  const operationLocationsResource = useApiResource(
+    selectedMachineOperation && can('operations.history')
+      ? `/api/v1/operations/${selectedMachineOperation.id}/locations`
+      : '',
+    0,
+    {
+      enabled: Boolean(selectedMachineOperation?.started_at && can('operations.history')),
+      pollingIntervalMs: ['EM_EXECUCAO', 'INTERROMPIDA'].includes(selectedMachineOperation?.status)
+        ? LIVE_REFRESH_INTERVAL_MS
+        : 0,
+    },
+  );
+  const operationComparison = operationLocationsResource.data?.comparison;
+  const operationProgress = ['EM_EXECUCAO', 'INTERROMPIDA'].includes(selectedMachineOperation?.status)
+    && machineContextResource.data?.route_progress != null
+    && Number.isFinite(Number(machineContextResource.data?.route_progress))
+    ? Math.max(0, Math.min(100, Number(machineContextResource.data.route_progress) * 100))
+    : null;
+  const operationTrack = (operationLocationsResource.data?.locations || [])
+    .map((location) => [Number(location.latitude), Number(location.longitude)])
+    .filter((point) => point.every(Number.isFinite));
+  const plannedRouteCoordinates = geoLineToLeaflet(
+    machineContextResource.data?.operation?.id === selectedMachineOperation?.id
+      ? machineContextResource.data?.planned_route?.geometry
+      : null,
+  );
+
+  useEffect(() => {
+    if (selectedMapMachineId != null || !mapMachineLocations.length) return;
+    const preferredOperation = operations.find((operation) => (
+      ['EM_EXECUCAO', 'INTERROMPIDA'].includes(operation.status) && operation.machine_id != null
+    )) || [...operations]
+      .filter((operation) => operation.machine_id != null && operation.route_plan_id != null)
+      .sort((left, right) => new Date(right.updated_at || right.created_at || 0) - new Date(left.updated_at || left.created_at || 0))[0];
+    const preferredMachine = preferredOperation?.machine_id != null
+      ? mapMachineLocations.find((machine) => String(machine.maquina_id) === String(preferredOperation.machine_id))
+      : null;
+    setSelectedMapMachineId(preferredMachine?.maquina_id ?? mapMachineLocations[0].maquina_id);
+  }, [mapMachineLocations, operations, selectedMapMachineId]);
 
   useEffect(() => {
     if (!draftResource || !activeFarmId) {
@@ -272,36 +438,6 @@ export default function OperationalMapPage() {
       isCurrentRequest = false;
     };
   }, [activeFarmId]);
-
-  useEffect(() => {
-    let isCurrentRequest = true;
-
-    async function loadMachineLocations() {
-      setLocationsError('');
-      try {
-        const response = await apiFetch('/api/v1/locations');
-        if (!response.ok) throw new Error(`Não foi possível carregar as localizações (HTTP ${response.status}).`);
-        const payload = await response.json();
-        if (isCurrentRequest) {
-          const latestLocations = new Map();
-          (payload.data || []).forEach((location) => {
-            if (!latestLocations.has(location.maquina_id)) latestLocations.set(location.maquina_id, location);
-          });
-          setMachineLocations([...latestLocations.values()].map((location) => {
-            const machine = machines.find((item) => item.id === location.maquina_id);
-            return { ...location, nome: machine?.nome, status: machine?.status };
-          }));
-        }
-      } catch (error) {
-        if (isCurrentRequest) setLocationsError(error.message || 'Não foi possível carregar as localizações.');
-      }
-    }
-
-    loadMachineLocations();
-    return () => {
-      isCurrentRequest = false;
-    };
-  }, [activeFarmId, locationsLoadAttempt, machines]);
 
   useEffect(() => {
     let isCurrentRequest = true;
@@ -996,10 +1132,16 @@ export default function OperationalMapPage() {
     setShowRoadProblemForm(false);
   };
 
-  const selectedMapMachine = machineLocations.find((machine) => machine.maquina_id === selectedMapMachineId);
   const isSelecting = !drawingMode && !placingStructure && !drawingRoad && !placingRoadProblem && !isPlanningRoute;
   const updateLayerVisibility = (layer) => {
     setVisibleLayers((current) => ({ ...current, [layer]: !current[layer] }));
+  };
+  const selectMapEntity = (entity, id) => {
+    setSelectedMapMachineId(entity === 'machine' ? id : null);
+    setSelectedFieldId(entity === 'field' ? id : null);
+    setSelectedMapRoadId(entity === 'road' ? id : null);
+    setSelectedMapStructureId(entity === 'structure' ? id : null);
+    setSelectedMapProblemId(entity === 'problem' ? id : null);
   };
 
   return (
@@ -1204,10 +1346,28 @@ export default function OperationalMapPage() {
           </button>
         </div>
       ) : null}
-      {locationsError ? (
+      {locationsResource.error ? (
         <div className="field-error-banner" role="alert">
-          <span>{locationsError}</span>
-          <button type="button" className="banner-action" onClick={() => setLocationsLoadAttempt((attempt) => attempt + 1)}>Tentar novamente</button>
+          <span>{locationsResource.error}</span>
+          <button type="button" className="banner-action" onClick={locationsResource.reload}>Tentar novamente</button>
+        </div>
+      ) : null}
+      {telemetryResource.error ? (
+        <div className="field-error-banner" role="alert">
+          <span>{telemetryResource.error}</span>
+          <button type="button" className="banner-action" onClick={telemetryResource.reload}>Tentar novamente</button>
+        </div>
+      ) : null}
+      {selectedMachineTelemetryResource.error ? (
+        <div className="field-error-banner" role="alert">
+          <span>{selectedMachineTelemetryResource.error}</span>
+          <button type="button" className="banner-action" onClick={selectedMachineTelemetryResource.reload}>Tentar novamente</button>
+        </div>
+      ) : null}
+      {operationsResource.error ? (
+        <div className="field-error-banner" role="alert">
+          <span>{operationsResource.error}</span>
+          <button type="button" className="banner-action" onClick={operationsResource.reload}>Tentar novamente</button>
         </div>
       ) : null}
 
@@ -1229,19 +1389,24 @@ export default function OperationalMapPage() {
         onRouteMapClick={handleRouteMapClick}
         calculatedRoute={calculatedRoute}
         operationalArea={operationalAreaResource.data}
-        machines={machineLocations}
+        machines={mapMachineLocations}
+        plannedRouteCoordinates={plannedRouteCoordinates}
+        actualRouteCoordinates={operationTrack}
         draftValidity={spatialValidation.status === 'checking' ? 'pending' : spatialValidation.status}
         visibleLayers={visibleLayers}
-        onSelectMachine={setSelectedMapMachineId}
+        onSelectMachine={(id) => selectMapEntity('machine', id)}
+        onSelectRoad={(id) => selectMapEntity('road', id)}
+        onSelectStructure={(id) => selectMapEntity('structure', id)}
+        onSelectRoadProblem={(id) => selectMapEntity('problem', id)}
         onMapReady={(map) => { mapRef.current = map; }}
         fields={fields}
-        structures={structures}
+        structures={mapStructures}
         roads={roads}
-        roadProblems={roadProblems}
+        roadProblems={mapRoadProblems}
         selectedRoadProblemRoadId={placingRoadProblem ? roadProblemFormData.roadId : null}
         fitToPersistedEntities={!isLoading && !isLoadingStructures && !isLoadingRoads && !isLoadingRoadProblems}
         selectedFieldId={selectedFieldId}
-        onSelectField={setSelectedFieldId}
+        onSelectField={(id) => selectMapEntity('field', id)}
       />
 
       <FieldFormModal
@@ -1313,6 +1478,88 @@ export default function OperationalMapPage() {
       ) : null}
         </section>
         {inspectorOpen ? <aside className="map-inspector-panel">
+          <section className="map-filter-panel" aria-label="Filtros do mapa">
+            <header><MapPin size={16} aria-hidden="true" /><strong>Filtrar entidades</strong></header>
+            {machineLocations.length ? (
+              <label>
+                Máquina
+                <select value={machineFilter} onChange={(event) => {
+                  const value = event.target.value;
+                  setMachineFilter(value);
+                  if (value !== 'all') selectMapEntity('machine', Number(value));
+                }}>
+                  <option value="all">Todas as máquinas</option>
+                  {machines.filter((machine) => machineLocations.some(
+                    (location) => String(location.maquina_id) === String(machine.id),
+                  )).map((machine) => (
+                    <option key={machine.id} value={String(machine.id)}>{machine.nome || `Máquina ${machine.id}`}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {machineStatuses.length ? (
+              <label>
+                Status da máquina
+                <select value={machineStatusFilter} onChange={(event) => setMachineStatusFilter(event.target.value)}>
+                  <option value="all">Todos os status</option>
+                  {machineStatuses.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {can('operations.view') ? (
+              <label>
+                Operação associada
+                <select value={operationFilter} onChange={(event) => {
+                  const value = event.target.value;
+                  setOperationFilter(value);
+                  const operation = operations.find((item) => String(item.id) === value);
+                  if (operation?.machine_id != null) selectMapEntity('machine', operation.machine_id);
+                }}>
+                  <option value="all">Todas as operações</option>
+                  {operations.filter((operation) => operation.machine_id).map((operation) => (
+                    <option key={operation.id} value={String(operation.id)}>
+                      {operation.name || operation.code || `Operação ${operation.id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {structureTypes.length ? (
+              <label>
+                Tipo de estrutura
+                <select value={structureTypeFilter} onChange={(event) => setStructureTypeFilter(event.target.value)}>
+                  <option value="all">Todos os tipos</option>
+                  {structureTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {problemSeverities.length ? (
+              <label>
+                Gravidade do problema
+                <select value={problemSeverityFilter} onChange={(event) => setProblemSeverityFilter(event.target.value)}>
+                  <option value="all">Todas as gravidades</option>
+                  {problemSeverities.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {(machineFilter !== 'all' || machineStatusFilter !== 'all' || operationFilter !== 'all'
+              || structureTypeFilter !== 'all' || problemSeverityFilter !== 'all') ? (
+                <button
+                  className="map-filter-reset"
+                  type="button"
+                  onClick={() => {
+                    setMachineFilter('all');
+                    setMachineStatusFilter('all');
+                    setOperationFilter('all');
+                    setStructureTypeFilter('all');
+                    setProblemSeverityFilter('all');
+                    selectMapEntity(null, null);
+                  }}
+                >
+                  Limpar filtros
+                </button>
+              ) : null}
+          </section>
           {isPlanningRoute ? (
             <RoutePlanningPanel
               method={routeMethod}
@@ -1347,11 +1594,13 @@ export default function OperationalMapPage() {
           <section className="map-layer-panel">
             <header><Layers3 size={17} /><strong>Camadas do mapa</strong></header>
             {[
+              ['operationalArea', 'Área da fazenda', operationalAreaResource.data?.geometry ? 1 : 0, Sprout],
+              ['proximityZone', 'Zona de proximidade', operationalAreaResource.data?.proximity_zone ? 1 : 0, MapPin],
               ['machines', 'Máquinas', machineLocations.length, Tractor],
               ['fields', 'Talhões', fields.length, MapPin],
               ['roads', 'Estradas', roads.length, MapPin],
-              ['structures', 'Estruturas', structures.length, MapPin],
-              ['problems', 'Problemas', roadProblems.length, TriangleAlert],
+              ['structures', 'Estruturas', mapStructures.length, MapPin],
+              ['problems', 'Problemas', mapRoadProblems.length, TriangleAlert],
               ['routes', 'Rotas calculadas', calculatedRoute ? 1 : 0, MapPin],
             ].map(([key, label, count, Icon]) => (
               <label className="map-layer-toggle" key={key}>
@@ -1362,13 +1611,38 @@ export default function OperationalMapPage() {
               </label>
             ))}
           </section>
+          <section className="map-legend-panel" aria-label="Legenda do mapa">
+            <header><Layers3 size={16} aria-hidden="true" /><strong>Legenda</strong></header>
+            <div><i className="map-legend-swatch farm-boundary" /><span>Perímetro e área da fazenda</span></div>
+            <div><i className="map-legend-swatch field-area" /><span>Talhão</span></div>
+            <div><i className="map-legend-swatch road-line" /><span>Estrada</span></div>
+            <div><i className="map-legend-swatch planned-line" /><span>Rota calculada</span></div>
+            <div><i className="map-legend-swatch actual-line" /><span>Trajetória GPS da operação</span></div>
+            <div><i className="map-legend-swatch machine-point" /><span>Localização da máquina</span></div>
+            <div><i className="map-legend-swatch structure-point" /><span>Estrutura</span></div>
+            <div><i className="map-legend-swatch problem-point" /><span>Problema viário</span></div>
+          </section>
           {selectedMapMachine ? (
             <section className="map-entity-card">
               <span className="section-overline">Máquina selecionada</span>
               <h3>{selectedMapMachine.nome || `Máquina ${selectedMapMachine.maquina_id}`}</h3>
               <div><span>Status</span><strong>{selectedMapMachine.status || 'Não informado'}</strong></div>
-              <div><span>Posição recebida</span><strong>{selectedMapMachine.latitude}, {selectedMapMachine.longitude}</strong></div>
-              <div><span>Última atualização</span><strong>{formatDateTime(selectedMapMachine.timestamp)}</strong></div>
+              <div><span>Código</span><strong>{machines.find((machine) => String(machine.id) === String(selectedMapMachine.maquina_id))?.code || '—'}</strong></div>
+              <div><span>Posição</span><strong>{selectedMapMachine.latitude}, {selectedMapMachine.longitude}{selectedMapMachine.coordinate_source === 'BASE' ? ` · Base ${selectedMapMachine.base_name}` : ''}</strong></div>
+              <div><span>Última atualização</span><strong>{selectedMapMachine.timestamp ? formatDateTime(selectedMapMachine.timestamp) : 'Sem posição GPS registrada'}</strong></div>
+              <div><span>Comunicação</span><strong className={`live-status live-status-${connectionStatus.toLowerCase()}`}>{connectionStatus === 'ONLINE' ? 'Online' : connectionStatus === 'STALE' ? 'Desatualizada' : 'Sem dados'}</strong></div>
+              <div><span>Velocidade</span><strong>{selectedMachineSpeed ? `${selectedMachineSpeed.valor} ${selectedMachineSpeed.unidade || ''} · ${formatDateTime(selectedMachineSpeed.timestamp)}` : 'Não disponível'}</strong></div>
+              <div><span>Operação</span><strong>{selectedMachineOperation?.name || 'Nenhuma operação associada'}{selectedMachineOperation ? ` · ${selectedMachineOperation.status.replaceAll('_', ' ')}` : ''}</strong></div>
+              <div><span>Estado operacional</span><strong>{machineContextResource.data?.operation_state || selectedMachineOperation?.status?.replaceAll('_', ' ') || 'Sem operação associada'}</strong></div>
+              {operationProgress != null ? <div><span>Progresso da rota reportado</span><strong>{operationProgress.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</strong></div> : null}
+              {operationComparison?.planned_distance_m != null ? <div><span>Distância planejada</span><strong>{Number(operationComparison.planned_distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</strong></div> : null}
+              {operationComparison?.actual_distance_m != null ? <div><span>Distância observada</span><strong>{Number(operationComparison.actual_distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</strong></div> : null}
+              {operationComparison?.gps_sample_count != null ? <div><span>Amostras GPS da operação</span><strong>{operationComparison.gps_sample_count}</strong></div> : null}
+              <div><span>Origem da posição</span><strong>{selectedMapMachine.coordinate_source === 'BASE' ? 'Base cadastrada (não é posição GPS)' : selectedMapMachine.source === 'SIMULATED' ? 'DADO SIMULADO' : selectedMapMachine.source === 'REAL' ? 'DADO REAL' : 'Não informada'}</strong></div>
+              {selectedMachineOperation ? <Link className="text-link" to={`/operacoes/${selectedMachineOperation.id}`}>Abrir acompanhamento da operação</Link> : null}
+              {can('telemetry.view') ? <Link className="text-link" to={`/telemetria?machineId=${selectedMapMachine.maquina_id}`}>Ver telemetria da máquina</Link> : null}
+              {machineContextResource.error ? <small className="live-data-error">Contexto operacional indisponível: {machineContextResource.error}</small> : null}
+              {operationLocationsResource.error ? <small className="live-data-error">Trilha indisponível: {operationLocationsResource.error}</small> : null}
             </section>
           ) : null}
           {selectedField ? (
@@ -1378,9 +1652,39 @@ export default function OperationalMapPage() {
               <div><span>Cultura</span><strong>{selectedField.crop || '—'}</strong></div>
               <div><span>Safra</span><strong>{selectedField.season || '—'}</strong></div>
               <div><span>Área</span><strong>{selectedField.areaHa ? `${selectedField.areaHa.toFixed(2)} ha` : '—'}</strong></div>
+              <div><span>Fazenda</span><strong>{activeFarm?.name || 'Contexto ativo'}</strong></div>
             </section>
           ) : null}
-          {!selectedMapMachine && !selectedField ? (
+          {selectedMapStructure ? (
+            <section className="map-entity-card">
+              <span className="section-overline">Estrutura selecionada</span>
+              <h3>{selectedMapStructure.nome || `Estrutura ${selectedMapStructure.id}`}</h3>
+              <div><span>Tipo</span><strong>{selectedMapStructure.tipo || 'Não informado'}</strong></div>
+              <div><span>Descrição</span><strong>{selectedMapStructure.descricao || 'Não informada'}</strong></div>
+              <div><span>Coordenadas</span><strong>{selectedMapStructure.coordinates?.join(', ') || 'Não disponíveis'}</strong></div>
+            </section>
+          ) : null}
+          {selectedMapRoad ? (
+            <section className="map-entity-card">
+              <span className="section-overline">Estrada selecionada</span>
+              <h3>{selectedMapRoad.nome || `Estrada ${selectedMapRoad.id}`}</h3>
+              <div><span>Tipo</span><strong>{selectedMapRoad.tipo || 'Não informado'}</strong></div>
+              <div><span>Situação</span><strong>{selectedMapRoad.status || 'Não informada pela API'}</strong></div>
+              <div><span>Comprimento</span><strong>{selectedMapRoad.comprimento_m != null && Number.isFinite(Number(selectedMapRoad.comprimento_m)) ? `${Number(selectedMapRoad.comprimento_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m` : 'Não informado'}</strong></div>
+            </section>
+          ) : null}
+          {selectedMapProblem ? (
+            <section className="map-entity-card">
+              <span className="section-overline">Problema viário selecionado</span>
+              <h3>{selectedMapProblem.tipo || `Problema ${selectedMapProblem.id}`}</h3>
+              <div><span>Gravidade</span><strong>{selectedMapProblem.gravidade || 'Não informada'}</strong></div>
+              <div><span>Status</span><strong>{selectedMapProblem.status || 'Não informado'}</strong></div>
+              <div><span>Estrada</span><strong>{selectedMapProblem.road_nome || 'Não informada'}</strong></div>
+              <div><span>Localização</span><strong>{selectedMapProblem.coordinates?.join(', ') || 'Não disponível'}</strong></div>
+              {selectedMapProblem.descricao ? <div><span>Descrição</span><strong>{selectedMapProblem.descricao}</strong></div> : null}
+            </section>
+          ) : null}
+          {!selectedMapMachine && !selectedField && !selectedMapStructure && !selectedMapRoad && !selectedMapProblem ? (
             <div className="map-inspector-empty"><MapPin size={18} /><span>Selecione uma entidade no mapa para consultar seus detalhes.</span></div>
           ) : null}
         </aside> : null}

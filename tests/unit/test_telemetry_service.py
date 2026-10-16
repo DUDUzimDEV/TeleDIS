@@ -32,9 +32,27 @@ def test_location_payload_keeps_both_coordinates_and_timestamp():
     assert saved["latitude"] == -23.500467
     assert saved["longitude"] == -47.4521
     assert saved["timestamp"] == "2026-10-01T14:10:00Z"
+    assert saved["source"] == "REAL"
     assert "valor" not in saved
-    assert repository.locations == [payload]
+    assert repository.locations == [{**payload, "source": "REAL"}]
     assert repository.readings == []
+
+
+def test_simulated_location_source_is_preserved():
+    repository = RecordingRepository()
+    service = TelemetryService(repository)
+    payload = {
+        "maquina_id": 1,
+        "timestamp": "2026-10-01T14:10:00Z",
+        "latitude": -23.500467,
+        "longitude": -47.4521,
+        "source": "simulated",
+    }
+
+    saved = service.process_location(payload)
+
+    assert saved["source"] == "SIMULATED"
+    assert repository.locations[0]["source"] == "SIMULATED"
 
 
 @pytest.mark.parametrize(
@@ -76,3 +94,23 @@ def test_invalid_location_payload_is_rejected(payload):
     service = TelemetryService(RecordingRepository())
 
     assert not service.validate_location_payload(payload)
+
+
+def test_unsupported_source_is_rejected_for_measurements_and_locations():
+    service = TelemetryService(RecordingRepository())
+    measurement = {
+        "maquina_id": 1,
+        "timestamp": "2026-10-01T14:10:00Z",
+        "valor": 12,
+        "source": "INVENTED",
+    }
+    location = {
+        "maquina_id": 1,
+        "timestamp": "2026-10-01T14:10:00Z",
+        "latitude": 0,
+        "longitude": 0,
+        "source": "INVENTED",
+    }
+
+    assert not service.validate_payload(measurement)
+    assert not service.validate_location_payload(location)

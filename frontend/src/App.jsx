@@ -7,6 +7,7 @@ import DashboardPage from './pages/DashboardPage';
 import FarmSelectionPage from './pages/FarmSelectionPage';
 import FarmsPage from './pages/FarmsPage';
 import FieldsPage from './pages/FieldsPage';
+import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import MachinesPage from './pages/MachinesPage';
 import OperationalMapPage from './pages/OperationalMapPage';
@@ -21,6 +22,7 @@ import RoutesPage from './pages/RoutesPage';
 import SettingsPage from './pages/SettingsPage';
 import StructuresPage from './pages/StructuresPage';
 import TeamsPage from './pages/TeamsPage';
+import TelemetryPage from './pages/TelemetryPage';
 import UsersPage from './pages/UsersPage';
 import AuditPage from './pages/AuditPage';
 import { useAuth } from './context/AuthContext';
@@ -85,9 +87,9 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={isAuthenticated ? <Navigate to={home} replace /> : <LoginPage />} />
       <Route path="/selecionar-fazenda" element={<ProtectedRoute allowFarmSelection><FarmSelectionPage /></ProtectedRoute>} />
-      <Route path="/" element={<Navigate to={home} replace />} />
       <Route path="/dashboard" element={<ProtectedPage permission="farm.view"><DashboardByRole /></ProtectedPage>} />
       <Route path="/mapa" element={<ProtectedPage permission="fields.view"><OperationalMapPage /></ProtectedPage>} />
       <Route path="/mapa-operacional" element={<Navigate to="/mapa" replace />} />
@@ -96,6 +98,7 @@ export default function App() {
       <Route path="/estruturas" element={<ProtectedPage permission="structures.view"><StructuresPage /></ProtectedPage>} />
       <Route path="/rotas" element={<RoutesByRole />} />
       <Route path="/alertas" element={<ProtectedPage permission="alerts.view"><AlertsPage /></ProtectedPage>} />
+      <Route path="/telemetria" element={<ProtectedPage permission="telemetry.view"><TelemetryPage /></ProtectedPage>} />
       <Route path="/recomendacoes" element={<ProtectedPage permission="reports.view"><RecommendationsPage /></ProtectedPage>} />
       <Route path="/problemas-vias" element={<ProtectedPage permission="road_problems.view"><RoadProblemsPage /></ProtectedPage>} />
       <Route path="/operadores" element={<ProtectedPage permission="users.view"><OperatorsPage /></ProtectedPage>} />
@@ -110,7 +113,7 @@ export default function App() {
       <Route path="/operacao" element={<OperatorRoute><OperatorPage /></OperatorRoute>} />
       <Route path="/minha-maquina" element={<OperatorRoute><OperatorPage /></OperatorRoute>} />
       <Route path="/minha-rota" element={<OperatorRoute><OperatorPage initialTab="route" /></OperatorRoute>} />
-      <Route path="*" element={<Navigate to={home} replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

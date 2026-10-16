@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { apiFetch } from '../api/apiClient';
+import { apiFetch, onUnauthorized } from '../api/apiClient';
+import { clearStoredSession } from './authStorage';
 
 const AuthContext = createContext(null);
 
@@ -30,6 +31,18 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(Boolean(token));
   const [error, setError] = useState('');
 
+  const invalidateSession = useCallback(() => {
+    clearStoredSession();
+    setToken(null);
+    setUser(null);
+    setFarms([]);
+    setActiveFarmId(null);
+    setPermissions([]);
+    setError('');
+  }, []);
+
+  useEffect(() => onUnauthorized(invalidateSession), [invalidateSession]);
+
   function farmsForStoredFarm(id) {
     try {
       const stored = JSON.parse(localStorage.getItem('teledis_farms') || '[]');
@@ -42,7 +55,11 @@ export function AuthProvider({ children }) {
   const finishFarmContext = useCallback(async (farmId) => {
     const response = await apiFetch('/api/v1/auth/me', { farmId });
     if (!response.ok) {
-      throw new Error(`Não foi possível validar o contexto da fazenda (HTTP ${response.status}).`);
+      const contextError = new Error(
+        `Não foi possível validar o contexto da fazenda (HTTP ${response.status}).`,
+      );
+      contextError.status = response.status;
+      throw contextError;
     }
     const payload = await response.json();
     const activeFarm = payload.farm;
@@ -71,7 +88,11 @@ export function AuthProvider({ children }) {
       setError('');
       try {
         const response = await apiFetch('/api/v1/farms', { skipFarm: true });
-        if (!response.ok) throw new Error(`Não foi possível carregar as fazendas (HTTP ${response.status}).`);
+        if (!response.ok) {
+          const farmsError = new Error(`Não foi possível carregar as fazendas (HTTP ${response.status}).`);
+          farmsError.status = response.status;
+          throw farmsError;
+        }
         const payload = await response.json();
         const availableFarms = payload.data || [];
         if (!active) return;
@@ -90,7 +111,11 @@ export function AuthProvider({ children }) {
         localStorage.setItem('teledis_farm_id', String(selected.id));
         await finishFarmContext(String(selected.id));
       } catch (sessionError) {
-        if (active) setError(sessionError.message || 'Não foi possível restaurar a sessão.');
+        if (active && sessionError.status === 401) {
+          invalidateSession();
+        } else if (active) {
+          setError(sessionError.message || 'Não foi possível restaurar a sessão.');
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -98,7 +123,7 @@ export function AuthProvider({ children }) {
 
     restoreSession();
     return () => { active = false; };
-  }, [token, finishFarmContext]);
+  }, [token, finishFarmContext, invalidateSession]);
 
   const signIn = useCallback((payload) => {
     const nextFarms = payload.farms || [];
@@ -156,18 +181,9 @@ export function AuthProvider({ children }) {
     try {
       if (token) await apiFetch('/api/v1/auth/logout', { method: 'POST' });
     } finally {
-      localStorage.removeItem('teledis_token');
-      localStorage.removeItem('teledis_user');
-      localStorage.removeItem('teledis_farms');
-      localStorage.removeItem('teledis_farm_id');
-      setToken(null);
-      setUser(null);
-      setFarms([]);
-      setPermissions([]);
-      setActiveFarmId(null);
-      setError('');
+      invalidateSession();
     }
-  }, [token]);
+  }, [token, invalidateSession]);
 
   const activeFarm = farms.find((farm) => String(farm.id) === String(activeFarmId)) || null;
   const value = useMemo(() => ({

@@ -6,8 +6,9 @@ export function geoPointToLeaflet(geometry) {
 }
 
 export function geoLineToLeaflet(geometry) {
-  return Array.isArray(geometry?.coordinates)
-    ? geometry.coordinates.map(([longitude, latitude]) => [Number(latitude), Number(longitude)])
+  const lineGeometry = geometry?.type === 'Feature' ? geometry.geometry : geometry;
+  return Array.isArray(lineGeometry?.coordinates)
+    ? lineGeometry.coordinates.map(([longitude, latitude]) => [Number(latitude), Number(longitude)])
     : [];
 }
 

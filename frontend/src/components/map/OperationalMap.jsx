@@ -104,7 +104,7 @@ function MapClickHandler({
   return null;
 }
 
-function PersistedEntityBounds({ fields, structures, roads, roadProblems, machines, operationalArea, ready, placingRoadProblem, selectedRoadProblemRoadId }) {
+function PersistedEntityBounds({ fields, structures, roads, roadProblems, operationalArea, ready, placingRoadProblem, selectedRoadProblemRoadId }) {
   const map = useMap();
 
   React.useEffect(() => {
@@ -117,7 +117,6 @@ function PersistedEntityBounds({ fields, structures, roads, roadProblems, machin
       ...structures.map((structure) => structure.coordinates),
       ...roads.flatMap((road) => road.points),
       ...roadProblems.map((problem) => problem.coordinates),
-      ...machines.map((machine) => [machine.latitude, machine.longitude]),
       ...geometryLeafletCoordinates(operationalArea?.geometry),
       ...geometryLeafletCoordinates(operationalArea?.proximity_zone),
     ];
@@ -132,7 +131,7 @@ function PersistedEntityBounds({ fields, structures, roads, roadProblems, machin
     }
 
     return undefined;
-  }, [fields, machines, map, operationalArea, placingRoadProblem, ready, roadProblems, roads, structures]);
+  }, [fields, map, operationalArea, placingRoadProblem, ready, roadProblems, roads, structures]);
 
   React.useEffect(() => {
     if (!placingRoadProblem || !selectedRoadProblemRoadId) {
@@ -189,6 +188,8 @@ export default function OperationalMap({
   selectedRoadProblemRoadId = null,
   routePickTarget = null,
   calculatedRoute = null,
+  plannedRouteCoordinates = [],
+  actualRouteCoordinates = [],
   operationalArea = null,
   draftPoints = [],
   draftRoadPoints = [],
@@ -209,6 +210,9 @@ export default function OperationalMap({
   selectedFieldId,
   onSelectField,
   onSelectMachine,
+  onSelectStructure,
+  onSelectRoad,
+  onSelectRoadProblem,
   onMapReady,
 }) {
   const mapCoordinates = [
@@ -219,6 +223,8 @@ export default function OperationalMap({
     ...roads.flatMap((road) => road.points),
     ...roadProblems.map((problem) => problem.coordinates),
     ...machines.map((machine) => [machine.latitude, machine.longitude]),
+    ...plannedRouteCoordinates,
+    ...actualRouteCoordinates,
   ];
   const center = getCoordinatesCenter([mapCoordinates]) || [0, 0];
 
@@ -249,21 +255,20 @@ export default function OperationalMap({
           structures={structures}
           roads={roads}
           roadProblems={roadProblems}
-          machines={machines}
           operationalArea={operationalArea}
           ready={fitToPersistedEntities}
           placingRoadProblem={placingRoadProblem}
           selectedRoadProblemRoadId={selectedRoadProblemRoadId}
         />
 
-        {operationalArea?.proximity_zone ? (
+        {visibleLayers.proximityZone !== false && operationalArea?.proximity_zone ? (
           <GeoJSON
             key={`farm-proximity-${JSON.stringify(operationalArea.proximity_zone)}`}
             data={operationalArea.proximity_zone}
             style={{ color: '#b48742', weight: 1.5, dashArray: '6 5', fillColor: '#e6d6b5', fillOpacity: 0.08 }}
           />
         ) : null}
-        {operationalArea?.geometry ? (
+        {visibleLayers.operationalArea !== false && operationalArea?.geometry ? (
           <GeoJSON
             key={`farm-area-${JSON.stringify(operationalArea.geometry)}`}
             data={operationalArea.geometry}
@@ -291,8 +296,8 @@ export default function OperationalMap({
               <Popup>
                 <div className="map-popup">
                   <strong>{field.name}</strong>
-                  <div>Cultura: {field.crop || 'Cana-de-açúcar'}</div>
-                  <div>Safra: {field.season || '2026/27'}</div>
+                  <div>Cultura: {field.crop || 'Não informada'}</div>
+                  <div>Safra: {field.season || 'Não informada'}</div>
                   <div>Área: {field.areaHa ? `${field.areaHa.toFixed(2)} ha` : '—'}</div>
                 </div>
               </Popup>
@@ -301,7 +306,12 @@ export default function OperationalMap({
         }) : null}
 
         {visibleLayers.structures !== false ? structures.map((structure) => (
-          <Marker key={structure.id} position={structure.coordinates} icon={structureIcon}>
+          <Marker
+            key={structure.id}
+            position={structure.coordinates}
+            icon={structureIcon}
+            eventHandlers={{ click: () => onSelectStructure?.(structure.id) }}
+          >
             <Popup>
               <div className="map-popup">
                 <strong>{structure.nome}</strong>
@@ -351,6 +361,8 @@ export default function OperationalMap({
                 if (placingRoadProblem) {
                   event.originalEvent?.stopPropagation();
                   onRoadProblemMapClick?.(event.latlng);
+                } else {
+                  onSelectRoad?.(road.id);
                 }
               },
             }}
@@ -359,7 +371,7 @@ export default function OperationalMap({
               <div className="map-popup">
                 <strong>{road.nome}</strong>
                 <div>Tipo: {roadTypeLabels[road.tipo] || road.tipo}</div>
-                <div>Comprimento: {road.comprimento_m.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</div>
+                <div>Comprimento: {road.comprimento_m != null && Number.isFinite(Number(road.comprimento_m)) ? `${Number(road.comprimento_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m` : 'Não informado'}</div>
                 <div>Descrição: {road.descricao || 'Sem descrição'}</div>
                 <small>ID: {road.id}</small>
               </div>
@@ -372,6 +384,7 @@ export default function OperationalMap({
             key={problem.id}
             position={problem.coordinates}
             icon={roadProblemIcons[problem.gravidade] || roadProblemIcons.MEDIA}
+            eventHandlers={{ click: () => onSelectRoadProblem?.(problem.id) }}
           >
             <Popup>
               <div className="map-popup">
@@ -418,23 +431,40 @@ export default function OperationalMap({
         ) : null}
 
         {visibleLayers.machines !== false ? machines.map((machine) => (
+          Number.isFinite(Number(machine.latitude)) && Number.isFinite(Number(machine.longitude)) ? (
           <CircleMarker
             key={machine.maquina_id}
             center={[Number(machine.latitude), Number(machine.longitude)]}
             radius={compact ? 9 : 11}
             eventHandlers={{ click: () => onSelectMachine?.(machine.maquina_id) }}
-            pathOptions={{ color: '#fff', weight: 2, fillColor: '#2879a8', fillOpacity: 1 }}
+            pathOptions={{
+              color: '#fff',
+              weight: 2,
+              fillColor: machine.coordinate_source === 'BASE' ? '#64766a' : '#2879a8',
+              fillOpacity: 1,
+            }}
           >
             <Popup>
               <strong>{machine.nome || `Máquina ${machine.maquina_id}`}</strong>
               <br />
               Status: {machine.status || 'Não informado'}
               <br />
-              Última posição: {machine.timestamp || 'Não informado'}
+              {machine.coordinate_source === 'BASE'
+                ? `Base cadastrada${machine.base_name ? `: ${machine.base_name}` : ''} (sem GPS)`
+                : `Última posição: ${machine.timestamp || 'Não informado'}`}
+              {machine.source ? <><br />Origem GPS: {machine.source === 'SIMULATED' ? 'DADO SIMULADO' : machine.source === 'REAL' ? 'DADO REAL' : machine.source}</> : null}
               {machine.velocidade != null ? <><br />Velocidade: {machine.velocidade} km/h</> : null}
             </Popup>
           </CircleMarker>
+          ) : null
         )) : null}
+
+        {plannedRouteCoordinates.length > 1 ? (
+          <Polyline positions={plannedRouteCoordinates} pathOptions={{ color: '#1464c0', weight: 6, opacity: 0.92, dashArray: '9 7' }} />
+        ) : null}
+        {actualRouteCoordinates.length > 1 ? (
+          <Polyline positions={actualRouteCoordinates} pathOptions={{ color: '#c44f2b', weight: 5, opacity: 0.96 }} />
+        ) : null}
 
         {calculatedRoute && visibleLayers.routes !== false ? (
           <>

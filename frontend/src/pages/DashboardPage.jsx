@@ -363,8 +363,21 @@ export default function DashboardPage() {
                       {String(operation.id) === String(leadOperation?.id)
                         && leadOperationContextResource.data?.route_progress != null
                         && Number.isFinite(Number(leadOperationContextResource.data?.route_progress))
-                        ? <small>Rota: {Math.max(0, Math.min(100, Number(leadOperationContextResource.data.route_progress) * 100)).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</small>
-                        : null}
+                        ? (
+                          <div className="dashboard-operation-progress-bar" title={`Progresso: ${(Number(leadOperationContextResource.data.route_progress) * 100).toFixed(1)}%`}>
+                            <div className="progress-bar-container">
+                              <div className="progress-bar-track">
+                                <div
+                                  className="progress-bar-fill"
+                                  style={{ width: `${Math.max(0, Math.min(100, Number(leadOperationContextResource.data.route_progress) * 100))}%` }}
+                                />
+                              </div>
+                              <span className="progress-bar-label">
+                                {(Number(leadOperationContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}%
+                              </span>
+                            </div>
+                          </div>
+                        ) : null}
                       <small>{formatDateTime(operation.started_at || operation.scheduled_start)}</small>
                     </span>
                   </Link>
@@ -395,7 +408,7 @@ export default function DashboardPage() {
                   const operation = operationByMachine.get(String(machine.id));
                   const communication = communicationByMachine.get(String(machine.id));
                   return (
-                    <div className="dashboard-machine-row" key={machine.id}>
+                    <Link className="dashboard-machine-row" key={machine.id} to="/maquinas">
                       <span className="dashboard-row-icon"><Tractor size={17} aria-hidden="true" /></span>
                       <span className="dashboard-row-main">
                         <strong>{machine.nome || `Máquina ${machine.id}`}</strong>
@@ -412,7 +425,7 @@ export default function DashboardPage() {
                           {communication?.source ? ` · ${communication.source === 'SIMULATED' ? 'DADO SIMULADO' : 'DADO REAL'}` : ''}
                         </small>
                       </span>
-                    </div>
+                    </Link>
                   );
                 })}
               </div>

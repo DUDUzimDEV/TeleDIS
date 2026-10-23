@@ -172,9 +172,9 @@ export default function TelemetryPage() {
             <select value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)}>
               <option value="all">Todas as máquinas</option>
               {machineFilter !== 'all' && !machineOptions.includes(machineFilter) ? (
-                <option value={machineFilter}>Máquina {machineFilter}</option>
+                <option value={machineFilter}>{machineNames.get(machineFilter) || `Máquina ${machineFilter}`}</option>
               ) : null}
-              {machineOptions.map((machineId) => <option key={machineId} value={machineId}>Máquina {machineId}</option>)}
+              {machineOptions.map((machineId) => <option key={machineId} value={machineId}>{machineNames.get(machineId) || `Máquina ${machineId}`}</option>)}
             </select>
           </label>
           <label>
@@ -219,7 +219,7 @@ export default function TelemetryPage() {
                   {filteredReadings.map((reading) => (
                     <tr key={reading.id}>
                       <td><time dateTime={reading.timestamp}>{formatDateTime(reading.timestamp)}</time></td>
-                      <td>Máquina {reading.maquina_id}</td>
+                      <td>{machineNames.get(String(reading.maquina_id)) || `Máquina ${reading.maquina_id}`}</td>
                       <td>{metricName(reading)}</td>
                       <td className="telemetry-value">{reading.valor ?? '—'} {reading.unidade || ''}</td>
                       <td><StatusBadge tone={reading.source === 'SIMULATED' ? 'warning' : 'neutral'}>{reading.source === 'SIMULATED' ? 'DADO SIMULADO' : reading.source === 'REAL' ? 'DADO REAL' : 'ORIGEM NÃO INFORMADA'}</StatusBadge></td>

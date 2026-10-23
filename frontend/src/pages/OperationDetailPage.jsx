@@ -24,6 +24,62 @@ const formatSeconds = (value) => value == null
   ? 'Indisponível'
   : `${Math.round(Number(value) / 60).toLocaleString('pt-BR')} min`;
 
+function OperationLifecycleStepper({ currentStatus, statusesHistory = [] }) {
+  const steps = [
+    { key: 'PLANEJADA', label: 'Planejada', index: 1 },
+    { key: 'ATRIBUIDA', label: 'Atribuída', index: 2 },
+    { key: 'ACEITA', label: 'Aceita', index: 3 },
+    { key: 'EM_EXECUCAO', label: 'Em execução', index: 4 },
+    { key: 'CONCLUIDA', label: 'Concluída', index: 5 },
+  ];
+
+  const statusMap = new Map();
+  statusesHistory.forEach((item) => {
+    if (item.new_status && !statusMap.has(item.new_status)) {
+      statusMap.set(item.new_status, item.created_at);
+    }
+  });
+
+  const currentIndex = steps.findIndex((step) => step.key === currentStatus);
+  const isInterrupted = currentStatus === 'INTERROMPIDA';
+  const isCancelled = currentStatus === 'CANCELADA';
+
+  return (
+    <nav className="operation-lifecycle-stepper" aria-label="Etapas do ciclo de vida da operação">
+      {steps.map((step, idx) => {
+        let stepClass = 'lifecycle-step';
+        let bullet = String(step.index);
+
+        if (currentStatus === step.key) {
+          stepClass += ' active';
+        } else if (currentIndex > idx || statusMap.has(step.key)) {
+          stepClass += ' completed';
+          bullet = '✓';
+        }
+
+        if (isInterrupted && step.key === 'EM_EXECUCAO') {
+          stepClass += ' interrupted active';
+          bullet = '⏸';
+        }
+        if (isCancelled && idx === Math.max(0, currentIndex)) {
+          stepClass += ' cancelled active';
+          bullet = '✕';
+        }
+
+        const stepTime = statusMap.get(step.key);
+
+        return (
+          <div className={stepClass} key={step.key}>
+            <div className="lifecycle-step-bullet">{bullet}</div>
+            <span className="lifecycle-step-label">{step.label}</span>
+            {stepTime ? <span className="lifecycle-step-time">{formatDateTime(stepTime)}</span> : null}
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
 export default function OperationDetailPage() {
   const { id } = useParams();
   const operationId = Number(id);
@@ -224,6 +280,10 @@ export default function OperationDetailPage() {
           <div><span className="section-overline">Estado atual</span><h2>{operation.name}</h2></div>
           <StatusBadge>{operation.status.replaceAll('_', ' ')}</StatusBadge>
         </div>
+        <OperationLifecycleStepper
+          currentStatus={operation.status}
+          statusesHistory={historyResource.data?.statuses || []}
+        />
         <dl className="cycle-facts">
           <div><dt>Talhão</dt><dd>{fieldName(operation)}</dd></div>
           <div><dt>Equipe</dt><dd>{operation.team_name || 'Não atribuída'}</dd></div>
@@ -318,9 +378,32 @@ export default function OperationDetailPage() {
             <span>Estado operacional: {machineContextResource.data?.operation_state || operation.status.replaceAll('_', ' ')}</span>
             {isExecuting && machineContextResource.data?.route_progress != null
               && Number.isFinite(Number(machineContextResource.data.route_progress))
-              ? <span>Progresso da rota: {(Number(machineContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</span>
-              : null}
-            {can('telemetry.view') ? <Link to={`/telemetria?machineId=${operation.machine_id}`}>Abrir telemetria da máquina</Link> : null}
+              ? (
+                <div className="operation-route-progress" aria-label="Progresso da rota">
+                  <span>Progresso da rota</span>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-track">
+                      <div
+                        className={`progress-bar-fill${operation.status === 'INTERROMPIDA' ? ' warning' : (Number(machineContextResource.data.route_progress) >= 1) ? ' completed' : ''}`}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(machineContextResource.data.route_progress) * 100))}%` }}
+                        role="progressbar"
+                        aria-valuenow={Math.round(Number(machineContextResource.data.route_progress) * 100)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`Progresso da rota: ${(Number(machineContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`}
+                      />
+                    </div>
+                    <strong className="progress-bar-label">
+                      {(Number(machineContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%
+                    </strong>
+                  </div>
+                </div>
+              ) : null}
+            <div className="operation-quick-actions" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.35rem' }}>
+              {can('machines.view') ? <Link to="/maquinas" className="text-link">Ver máquina na frota</Link> : null}
+              {can('telemetry.view') ? <Link to={`/telemetria?machineId=${operation.machine_id}`} className="text-link">Abrir telemetria da máquina</Link> : null}
+              <Link to={`/operacoes/${operation.id}/relatorio`} className="text-link">Abrir relatório operacional</Link>
+            </div>
           </div>
         ) : null}
       </section>

@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { CircleMarker, MapContainer, Marker, Polygon, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import { divIcon, latLngBounds } from 'leaflet';
 
-import { getCoordinatesCenter, geoLineToLeaflet, geoPointToLeaflet, geoPolygonToLeaflet } from '../../utils/geoData';
+import { getCoordinatesCenter, geoLineToLeaflet, geoPointToLeaflet, geoPolygonToLeaflet, formatDateTime } from '../../utils/geoData';
 
 const structureIcon = divIcon({
   className: 'entity-map-marker structure-map-marker',
@@ -161,7 +161,12 @@ export default function EntityMap({
               <Popup>
                 <strong>{machine.nome || `Máquina ${machine.maquina_id}`}</strong>
                 <br />{machine.status || 'Localização registrada'}
-                {machine.source === 'SIMULATED' ? <><br /><strong>DADO SIMULADO</strong></> : null}
+                {machine.timestamp ? <><br /><small>Atualizado: {formatDateTime(machine.timestamp)}</small></> : null}
+                {machine.source === 'SIMULATED' ? (
+                  <><br /><strong style={{ color: '#d97706' }}>DADO SIMULADO</strong></>
+                ) : machine.source === 'REAL' ? (
+                  <><br /><strong style={{ color: '#15803d' }}>DADO REAL</strong></>
+                ) : null}
               </Popup>
             </CircleMarker>
           );

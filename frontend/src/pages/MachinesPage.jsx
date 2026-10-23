@@ -83,6 +83,19 @@ export default function MachinesPage() {
     },
   );
   const simulatorContext = simulatorContextResource.data;
+  const latestByMetric = useMemo(() => {
+    const map = new Map();
+    latestReadings.forEach((reading) => {
+      const key = String(reading.metric || '').toLowerCase();
+      if (key && !map.has(key)) {
+        map.set(key, reading);
+      }
+    });
+    return map;
+  }, [latestReadings]);
+  const routeProgressValue = simulatorContext?.route_progress != null && Number.isFinite(Number(simulatorContext.route_progress))
+    ? Math.max(0, Math.min(100, Number(simulatorContext.route_progress) * 100))
+    : null;
   const types = [...new Set(machines.map((machine) => machine.tipo).filter(Boolean))];
   const statuses = [...new Set(machines.map((machine) => machine.status).filter(Boolean))];
   const filteredMachines = useMemo(() => machines.filter((machine) => (
@@ -348,6 +361,41 @@ export default function MachinesPage() {
                 ) : null}
               </section>
 
+              {routeProgressValue !== null ? (
+                <section className="machine-progress-panel" aria-label="Progresso da rota">
+                  <div className="section-heading compact-heading">
+                    <div>
+                      <span className="section-overline">Execução ativa</span>
+                      <h3>Progresso da rota</h3>
+                    </div>
+                  </div>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-track">
+                      <div
+                        className={`progress-bar-fill${simulatorContext?.operation_state === 'INTERROMPIDA' ? ' warning' : routeProgressValue >= 100 ? ' completed' : ''}`}
+                        style={{ width: `${routeProgressValue}%` }}
+                        role="progressbar"
+                        aria-valuenow={Math.round(routeProgressValue)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`Progresso da rota: ${routeProgressValue.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`}
+                      />
+                    </div>
+                    <strong className="progress-bar-label">
+                      {routeProgressValue.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%
+                    </strong>
+                  </div>
+                  <div className="progress-operation-meta">
+                    {simulatorContext?.operation?.name ? (
+                      <span>Operação: <strong>{simulatorContext.operation.name}</strong></span>
+                    ) : null}
+                    {simulatorContext?.field?.name ? (
+                      <span>Destino: <strong>{simulatorContext.field.name}</strong></span>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+
               <div className="machine-readings">
                 <div className="section-heading compact-heading">
                   <div><span className="section-overline">Telemetria disponível</span><h3>Últimas medições</h3></div>
@@ -355,6 +403,21 @@ export default function MachinesPage() {
                 {activeTelemetryResource.loading ? <LoadingState label="Consultando telemetria..." /> : null}
                 {!activeTelemetryResource.loading && !latestReadings.length ? (
                   <EmptyState title="Sem medições disponíveis" description="Não há leituras recentes associadas a esta máquina." />
+                ) : null}
+                {!activeTelemetryResource.loading && latestByMetric.size > 0 ? (
+                  <div className="machine-kpi-grid" aria-label="Indicadores recentes de telemetria">
+                    {[...latestByMetric.values()].slice(0, 5).map((item) => (
+                      <div className="machine-kpi-card" key={item.id || item.metric}>
+                        <span className="kpi-label">{item.metric}</span>
+                        <div className="kpi-value">
+                          {item.valor ?? '—'}<span className="kpi-unit">{item.unidade || ''}</span>
+                        </div>
+                        <span className={`kpi-source ${item.source === 'REAL' ? 'real' : 'simulated'}`}>
+                          {item.source === 'SIMULATED' ? 'SIMULADO' : item.source === 'REAL' ? 'REAL' : 'ORIGEM NÃO INFORMADA'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 ) : null}
                 {latestReadings.slice(0, 6).map((reading) => (
                   <div className="reading-row" key={reading.id}>

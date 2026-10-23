@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Bell, Building2, ChevronDown, ChevronRight, LogOut, Menu, UserRound } from 'lucide-react';
+import { Bell, Building2, ChevronDown, ChevronRight, LogOut, Menu, Search, UserRound } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../../context/AuthContext';
+import CommandPalette from './CommandPalette';
 
 const roleLabels = {
   OWNER: 'Proprietário',
@@ -41,6 +42,9 @@ function getBreadcrumb(pathname) {
   const segments = pathname.split('/').filter(Boolean);
   const route = segments[0] || 'dashboard';
   const labels = breadcrumbLabels[route] || ['TeleDis', 'Área operacional'];
+  if (route === 'operacoes' && segments[1] && segments[2] === 'relatorio') {
+    return ['Operações', `#${segments[1]}`, 'Relatório'];
+  }
   return [...labels, ...(segments.length > 1 ? [`#${segments[1]}`] : [])];
 }
 
@@ -58,12 +62,24 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false }) {
     can,
   } = useAuth();
   const [actionError, setActionError] = useState('');
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const breadcrumbs = getBreadcrumb(location.pathname);
   const name = user?.full_name || user?.username || 'Sessão autenticada';
   const initials = name.slice(0, 2).toUpperCase();
   const eventsPath = can('alerts.view') && can('telemetry.view')
     ? '/alertas'
     : can('road_problems.view') ? '/problemas-vias' : null;
+
+  React.useEffect(() => {
+    function openCommandPalette(event) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    }
+    document.addEventListener('keydown', openCommandPalette);
+    return () => document.removeEventListener('keydown', openCommandPalette);
+  }, []);
 
   async function handleFarmChange(event) {
     setActionError('');
@@ -115,6 +131,17 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false }) {
         <div><strong>TeleDis</strong><small>Centro de operação agrícola</small></div>
       </div>
       <div className="topbar-actions">
+        <button
+          type="button"
+          className="topbar-search-trigger"
+          onClick={() => setCommandPaletteOpen(true)}
+          aria-label="Abrir navegação rápida"
+          title="Navegação rápida (Ctrl+K)"
+        >
+          <Search size={16} aria-hidden="true" />
+          <span>Buscar</span>
+          <kbd>Ctrl K</kbd>
+        </button>
         <label className="farm-context-switcher">
           <Building2 size={16} aria-hidden="true" />
           <span className="sr-only">Fazenda ativa</span>
@@ -166,6 +193,7 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false }) {
       </div>
       {actionError ? <p className="farm-switch-error" role="alert">{actionError}</p> : null}
       <span className="sr-only">Fazenda ativa: {activeFarm?.name || 'não selecionada'}</span>
+      <CommandPalette open={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} can={can} />
     </header>
   );
 }

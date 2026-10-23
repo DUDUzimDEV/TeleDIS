@@ -314,6 +314,18 @@ export default function OperationalMapPage() {
   const selectedMachineSpeed = selectedMachineReadings.find((reading) => (
     /velocidade|speed/i.test(String(reading.metric || ''))
   ));
+  const selectedMachineRpm = selectedMachineReadings.find((reading) => (
+    /rpm/i.test(String(reading.metric || ''))
+  ));
+  const selectedMachineTemp = selectedMachineReadings.find((reading) => (
+    /temperatura|temperature/i.test(String(reading.metric || ''))
+  ));
+  const selectedMachineFuel = selectedMachineReadings.find((reading) => (
+    /combustivel|fuel/i.test(String(reading.metric || ''))
+  ));
+  const selectedMachineHourmeter = selectedMachineReadings.find((reading) => (
+    /horimetro|hourmeter/i.test(String(reading.metric || ''))
+  ));
   const selectedTelemetryTimestamp = selectedMachineReadings[0]?.timestamp;
   const selectedLastUpdate = getLatestTimestamp(
     selectedMapMachine?.timestamp,
@@ -1634,13 +1646,70 @@ export default function OperationalMapPage() {
               <div><span>Velocidade</span><strong>{selectedMachineSpeed ? `${selectedMachineSpeed.valor} ${selectedMachineSpeed.unidade || ''} · ${formatDateTime(selectedMachineSpeed.timestamp)}` : 'Não disponível'}</strong></div>
               <div><span>Operação</span><strong>{selectedMachineOperation?.name || 'Nenhuma operação associada'}{selectedMachineOperation ? ` · ${selectedMachineOperation.status.replaceAll('_', ' ')}` : ''}</strong></div>
               <div><span>Estado operacional</span><strong>{machineContextResource.data?.operation_state || selectedMachineOperation?.status?.replaceAll('_', ' ') || 'Sem operação associada'}</strong></div>
-              {operationProgress != null ? <div><span>Progresso da rota reportado</span><strong>{operationProgress.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</strong></div> : null}
+              {operationProgress != null ? (
+                <div style={{ marginTop: '0.4rem', marginBottom: '0.4rem' }}>
+                  <span style={{ fontSize: '0.75rem', color: '#556b5a', fontWeight: 600 }}>Progresso da rota</span>
+                  <div className="progress-bar-container" style={{ marginTop: '0.2rem' }}>
+                    <div className="progress-bar-track">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${operationProgress}%` }}
+                        role="progressbar"
+                        aria-valuenow={Math.round(operationProgress)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`Progresso da rota: ${operationProgress.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`}
+                      />
+                    </div>
+                    <strong className="progress-bar-label">
+                      {operationProgress.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%
+                    </strong>
+                  </div>
+                </div>
+              ) : null}
               {operationComparison?.planned_distance_m != null ? <div><span>Distância planejada</span><strong>{Number(operationComparison.planned_distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</strong></div> : null}
               {operationComparison?.actual_distance_m != null ? <div><span>Distância observada</span><strong>{Number(operationComparison.actual_distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</strong></div> : null}
               {operationComparison?.gps_sample_count != null ? <div><span>Amostras GPS da operação</span><strong>{operationComparison.gps_sample_count}</strong></div> : null}
+              {(selectedMachineRpm || selectedMachineTemp || selectedMachineFuel || selectedMachineHourmeter) ? (
+                <div className="machine-kpi-grid" style={{ marginTop: '0.6rem', marginBottom: '0.6rem' }} aria-label="Telemetria mais recente">
+                  {selectedMachineSpeed ? (
+                    <div className="machine-kpi-card">
+                      <span className="kpi-label">Velocidade</span>
+                      <div className="kpi-value">{selectedMachineSpeed.valor}<span className="kpi-unit">{selectedMachineSpeed.unidade || 'km/h'}</span></div>
+                    </div>
+                  ) : null}
+                  {selectedMachineRpm ? (
+                    <div className="machine-kpi-card">
+                      <span className="kpi-label">RPM</span>
+                      <div className="kpi-value">{selectedMachineRpm.valor}<span className="kpi-unit">{selectedMachineRpm.unidade || 'rpm'}</span></div>
+                    </div>
+                  ) : null}
+                  {selectedMachineTemp ? (
+                    <div className="machine-kpi-card">
+                      <span className="kpi-label">Temperatura</span>
+                      <div className="kpi-value">{selectedMachineTemp.valor}<span className="kpi-unit">{selectedMachineTemp.unidade || '°C'}</span></div>
+                    </div>
+                  ) : null}
+                  {selectedMachineFuel ? (
+                    <div className="machine-kpi-card">
+                      <span className="kpi-label">Combustível</span>
+                      <div className="kpi-value">{selectedMachineFuel.valor}<span className="kpi-unit">{selectedMachineFuel.unidade || '%'}</span></div>
+                    </div>
+                  ) : null}
+                  {selectedMachineHourmeter ? (
+                    <div className="machine-kpi-card">
+                      <span className="kpi-label">Horímetro</span>
+                      <div className="kpi-value">{selectedMachineHourmeter.valor}<span className="kpi-unit">{selectedMachineHourmeter.unidade || 'h'}</span></div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div><span>Origem da posição</span><strong>{selectedMapMachine.coordinate_source === 'BASE' ? 'Base cadastrada (não é posição GPS)' : selectedMapMachine.source === 'SIMULATED' ? 'DADO SIMULADO' : selectedMapMachine.source === 'REAL' ? 'DADO REAL' : 'Não informada'}</strong></div>
-              {selectedMachineOperation ? <Link className="text-link" to={`/operacoes/${selectedMachineOperation.id}`}>Abrir acompanhamento da operação</Link> : null}
-              {can('telemetry.view') ? <Link className="text-link" to={`/telemetria?machineId=${selectedMapMachine.maquina_id}`}>Ver telemetria da máquina</Link> : null}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginTop: '0.5rem' }}>
+                {can('machines.view') ? <Link className="text-link" to="/maquinas">Ver máquina na frota</Link> : null}
+                {selectedMachineOperation ? <Link className="text-link" to={`/operacoes/${selectedMachineOperation.id}`}>Abrir acompanhamento da operação</Link> : null}
+                {can('telemetry.view') ? <Link className="text-link" to={`/telemetria?machineId=${selectedMapMachine.maquina_id}`}>Ver telemetria da máquina</Link> : null}
+              </div>
               {machineContextResource.error ? <small className="live-data-error">Contexto operacional indisponível: {machineContextResource.error}</small> : null}
               {operationLocationsResource.error ? <small className="live-data-error">Trilha indisponível: {operationLocationsResource.error}</small> : null}
             </section>

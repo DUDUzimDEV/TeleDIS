@@ -4,6 +4,7 @@ import { Activity, BellRing, CircleHelp } from 'lucide-react';
 import PageHeading from '../components/ui/PageHeading';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/PageState';
 import StatusBadge from '../components/ui/StatusBadge';
+import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { formatDateTime } from '../utils/geoData';
 
@@ -11,7 +12,13 @@ const asList = (value) => Array.isArray(value) ? value : [];
 const isAlertMetric = (reading) => /alert|alarme/i.test(String(reading.metric || ''));
 
 export default function AlertsPage() {
+  const { can } = useAuth();
   const resource = useApiResource('/api/v1/telemetry');
+  const machinesResource = useApiResource('/api/v1/machines', 0, { enabled: can('machines.view') });
+  const machineNames = useMemo(
+    () => new Map(asList(machinesResource.data).map((m) => [String(m.id), m.nome || m.code || `Máquina ${m.id}`])),
+    [machinesResource.data],
+  );
   const [filter, setFilter] = useState('all');
   const readings = asList(resource.data);
   const filtered = useMemo(() => readings.filter((reading) => (
@@ -57,7 +64,14 @@ export default function AlertsPage() {
                 <time>{formatDateTime(reading.timestamp)}</time>
                 <div className="alert-event-copy">
                   <div><strong>{reading.metric || 'Leitura de telemetria'}</strong><StatusBadge tone={isAlertMetric(reading) ? 'warning' : 'info'}>{isAlertMetric(reading) ? 'Alerta nomeado' : 'Informativo'}</StatusBadge></div>
-                  <p>Máquina {reading.maquina_id} · {reading.valor ?? '—'} {reading.unidade || ''}</p>
+                  <p>
+                    {machineNames.get(String(reading.maquina_id)) || `Máquina ${reading.maquina_id}`} · {reading.valor ?? '—'} {reading.unidade || ''}
+                    {reading.source === 'SIMULATED' ? (
+                      <span style={{ marginLeft: '0.5rem', color: '#b45309', fontWeight: 600, fontSize: '0.72rem' }}>[DADO SIMULADO]</span>
+                    ) : reading.source === 'REAL' ? (
+                      <span style={{ marginLeft: '0.5rem', color: '#15803d', fontWeight: 600, fontSize: '0.72rem' }}>[DADO REAL]</span>
+                    ) : null}
+                  </p>
                 </div>
                 <span className="severity-not-provided">Gravidade não informada</span>
               </li>

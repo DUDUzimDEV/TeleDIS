@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Map, MapPin } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 
 import EntityMap from '../components/map/EntityMap';
 import PageHeading from '../components/ui/PageHeading';
@@ -10,7 +11,8 @@ const asList = (value) => Array.isArray(value) ? value : [];
 
 export default function FieldsPage() {
   const fieldsResource = useApiResource('/api/v1/fields');
-  const [selectedId, setSelectedId] = useState(null);
+  const [searchParams] = useSearchParams();
+  const [selectedId, setSelectedId] = useState(() => Number(searchParams.get('fieldId')) || null);
   const fields = asList(fieldsResource.data);
   const selected = fields.find((field) => field.id === selectedId) || fields[0] || null;
 

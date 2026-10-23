@@ -9,6 +9,7 @@ from simulator.simulator import (
     MachineReading,
     MqttPublisher,
     SimulatorApiError,
+    SimulatorConnectionError,
     SimulationEngine,
     SimulationRunStatus,
     SimulationState,
@@ -122,6 +123,22 @@ def test_api_client_rejects_machine_context_from_another_farm(monkeypatch):
         client.resolve_context()
 
 
+def test_api_client_classifies_timeout_as_temporary_connection_error(monkeypatch):
+    monkeypatch.setattr(
+        simulator_module,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()),
+    )
+    client = TeleDisApiClient(SimulatorConfig(
+        api_token="jwt-token",
+        farm_id=3,
+        machine_id=7,
+    ))
+
+    with pytest.raises(SimulatorConnectionError, match="tempo limite"):
+        client.resolve_context()
+
+
 def test_machine_without_operation_stays_at_its_validated_position():
     config = SimulatorConfig()
     machine = AgriculturalMachine(config)
@@ -212,7 +229,7 @@ def test_simulation_engine_starts_stopped_and_advances_simulated_time():
     reading, published = engine.step()
 
     assert engine.state.run_status is SimulationRunStatus.RUNNING
-    assert reading.timestamp == "2026-10-01T12:00:50Z"
+    assert reading.timestamp == "2026-10-01T12:00:05Z"
     assert machine.engine_hours == pytest.approx(50 / 3600)
     assert publisher.reading == reading
     assert published is True

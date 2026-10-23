@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Activity, ArrowLeft, MapPinned, RefreshCw, Route as RouteIcon } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Activity, ArrowLeft, MapPinned, Pause, Play, RefreshCw, RotateCcw, Route as RouteIcon } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
 import { apiFetch } from '../api/apiClient';
@@ -89,6 +89,7 @@ export default function OperationDetailPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [occurrence, setOccurrence] = useState({ occurrence_type: 'PROBLEMA_VIA', description: '' });
+  const [replay, setReplay] = useState({ active: false, playing: false, index: 0, speed: 1 });
   const operationResource = useApiResource(
     `/api/v1/operations/${operationId}`,
     refresh,
@@ -157,7 +158,9 @@ export default function OperationDetailPage() {
 
   const fields = asList(fieldsResource.data).filter((field) => Number(field.id) === Number(operation?.field_id));
   const locations = asList(locationsResource.data?.locations);
-  const actualRouteCoordinates = locations.map((location) => [
+  const replayAvailable = operation?.status === 'CONCLUIDA' && locations.length > 1;
+  const replayLocations = replay.active ? locations.slice(0, replay.index + 1) : locations;
+  const actualRouteCoordinates = replayLocations.map((location) => [
     Number(location.latitude),
     Number(location.longitude),
   ]).filter((point) => point.every(Number.isFinite));
@@ -167,7 +170,8 @@ export default function OperationDetailPage() {
     : asList(telemetryResource.data)
       .filter((reading) => String(reading.maquina_id) === String(operation?.machine_id))
       .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))[0];
-  const currentPosition = locationsResource.data?.current_position || latestLocation;
+  const replayPosition = replay.active ? locations[Math.min(replay.index, locations.length - 1)] : null;
+  const currentPosition = replayPosition || locationsResource.data?.current_position || latestLocation;
   const machines = currentPosition ? [{
     ...currentPosition,
     id: operation?.machine_id,
@@ -188,6 +192,25 @@ export default function OperationDetailPage() {
     latestTelemetry?.timestamp,
   );
   const communicationStatus = getCommunicationStatus(communicationTimestamp);
+
+  useEffect(() => {
+    if (!replay.active || !replay.playing || locations.length < 2) return undefined;
+    const timer = window.setInterval(() => {
+      setReplay((current) => {
+        const nextIndex = Math.min(current.index + 1, locations.length - 1);
+        return {
+          ...current,
+          index: nextIndex,
+          playing: nextIndex < locations.length - 1,
+        };
+      });
+    }, Math.max(180, 900 / replay.speed));
+    return () => window.clearInterval(timer);
+  }, [locations.length, replay.active, replay.playing, replay.speed]);
+
+  useEffect(() => {
+    setReplay({ active: false, playing: false, index: 0, speed: 1 });
+  }, [operationId]);
   const communicationSource = communicationTimestamp === getLatestTimestamp(latestLocation?.timestamp)
     ? latestLocation?.source
     : latestTelemetry?.source;
@@ -325,6 +348,43 @@ export default function OperationDetailPage() {
           <div><span className="section-overline">Contexto geográfico</span><h2>Rota planejada e execução GPS</h2></div>
           {isExecuting ? <span className="live-indicator"><RefreshCw size={14} />Atualização a cada 5 s</span> : null}
         </header>
+        {replayAvailable ? (
+          <div className="operation-replay-panel" aria-label="Replay da operação concluída">
+            <div>
+              <span className="replay-badge">▶ REPLAY</span>
+              <strong>Reprodução do histórico persistido</strong>
+              <small>
+                {replay.active
+                  ? `${replay.index + 1} / ${locations.length} pontos · origem ${currentPosition?.source || 'não informada'}`
+                  : `${locations.length} posições disponíveis · não altera a operação`}
+              </small>
+            </div>
+            <div className="operation-replay-actions">
+              {!replay.active ? (
+                <button type="button" className="toolbar-button primary" onClick={() => setReplay({ active: true, playing: true, index: 0, speed: 1 })}>
+                  <Play size={15} />Reproduzir operação
+                </button>
+              ) : (
+                <>
+                  <button type="button" className="toolbar-button outline" onClick={() => setReplay((current) => ({ ...current, playing: !current.playing }))}>
+                    {replay.playing ? <Pause size={15} /> : <Play size={15} />}{replay.playing ? 'Pausar' : 'Continuar'}
+                  </button>
+                  <button type="button" className="toolbar-button outline" onClick={() => setReplay((current) => ({ ...current, playing: true, index: 0 }))}>
+                    <RotateCcw size={15} />Reiniciar
+                  </button>
+                  <label>Velocidade
+                    <select value={replay.speed} onChange={(event) => setReplay((current) => ({ ...current, speed: Number(event.target.value) }))}>
+                      <option value="1">1×</option><option value="2">2×</option><option value="4">4×</option>
+                    </select>
+                  </label>
+                  <button type="button" className="toolbar-button ghost" onClick={() => setReplay({ active: false, playing: false, index: 0, speed: 1 })}>Sair do replay</button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : operation?.status === 'CONCLUIDA' && !locationsResource.loading ? (
+          <p className="operation-data-note">Replay indisponível: são necessários ao menos dois pontos GPS persistidos no intervalo da operação.</p>
+        ) : null}
         {locationsResource.error ? <ErrorState message={locationsResource.error} onRetry={locationsResource.reload} /> : null}
         {latestLocationResource.error ? <ErrorState message={latestLocationResource.error} onRetry={latestLocationResource.reload} /> : null}
         {machineContextResource.error ? <ErrorState message={machineContextResource.error} onRetry={machineContextResource.reload} /> : null}

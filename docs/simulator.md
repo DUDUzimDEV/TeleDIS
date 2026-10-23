@@ -157,10 +157,11 @@ cria uma máquina automaticamente quando recebe um ID desconhecido.
 ## Multiplicador de tempo
 
 `SIMULATOR_TIME_MULTIPLIER` aceita `1`, `5`, `10`, `20` ou `50` (padrão `1`).
-O intervalo de publicação continua sendo definido por
-`SIMULATOR_INTERVAL`; o multiplicador avança timestamp simulado, distância,
-horímetro e consumo de combustível na proporção configurada. Ele não altera os
-timestamps de dados reais.
+O intervalo de publicação e os timestamps persistidos continuam sendo definidos
+por `SIMULATOR_INTERVAL` e pelo relógio real. O multiplicador acelera somente a
+física da demonstração — distância, horímetro e consumo — sem projetar
+`recorded_at` no futuro. Isso mantém GPS e telemetria dentro da janela real da
+operação e permite relatório/replay objetivos.
 
 ## Testes
 
@@ -183,16 +184,43 @@ executa os processos reais do simulador e retorna um JSON com o resultado de
 cada etapa, contagens MQTT/banco e verificações negativas.
 
 Após uma execução concluída, a operação fica em estado terminal e o cenário é
-preservado para inspeção na interface. Para repetir ou remover os registros do
-cenário, execute a limpeza somente quando desejar descartá-los:
+preservado para inspeção na interface. Uma nova chamada a `prepare` ou `run`
+cria uma nova operação normal do TeleDis (`E2E TeleDis - Colheita #2`, `#3`,
+etc.), com novo plano de rota e históricos próprios. Fazenda, máquinas,
+estrutura-base, equipe, operador, talhão e rede viária são reutilizados. Uma
+preparação ainda não terminada é reutilizada, o que torna `prepare` seguido de
+`run` idempotente e evita operações órfãs.
+
+Cada preparação informa `run_id`, `run_number`, `operation_id` e, depois do
+cálculo, o `route_plan_id`. O identificador lógico é derivado do ID real da
+operação, sem tabela paralela. GPS e telemetria não possuem `operation_id` no
+schema atual; relatórios e replay correlacionam esses registros pela máquina e
+pela janela persistida entre `started_at` e `completed_at`.
+
+Não é necessário executar cleanup entre demonstrações. Para remover
+manualmente todo o conjunto E2E somente quando ele realmente não for mais
+necessário, use:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\teledis_e2e.py cleanup --confirm
 ```
 
-A limpeza exige essa confirmação explícita e remove apenas os recursos e dados
-identificados pelo cenário E2E; fazenda, usuários, RBAC, estradas, talhões e
-logs de auditoria são preservados.
+A limpeza exige confirmação explícita, nunca é chamada por `prepare` ou `run`,
+e remove todas as execuções numeradas do cenário junto dos recursos E2E;
+fazenda, usuários, RBAC, estradas, talhões e logs de auditoria são preservados.
+
+## Demo rápida do TeleDis
+
+1. Inicie os serviços e confirme que backend, PostgreSQL e MQTT estão saudáveis.
+2. Execute `python scripts/teledis_e2e.py run`; anote `operation_id` e
+   `route_plan_id` do JSON final.
+3. Abra o Dashboard e o mapa para acompanhar a operação identificada como
+   `SIMULATED`.
+4. O runner interrompe e retoma a operação durante a validação e termina com a
+   máquina na base.
+5. Abra `/operacoes/{operation_id}` e o relatório correspondente.
+6. Execute o mesmo comando novamente. Uma nova operação será criada e todas as
+   anteriores continuarão consultáveis; nenhuma limpeza é necessária.
 
 Na execução de referência em desenvolvimento, a máquina A percorreu a rota
 persistida de 1.051,71 m até o talhão e retornou à base. Foram capturados 232

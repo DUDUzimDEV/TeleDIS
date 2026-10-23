@@ -3,6 +3,7 @@ import { CircleMarker, MapContainer, Marker, Polygon, Polyline, Popup, TileLayer
 import { divIcon, latLngBounds } from 'leaflet';
 
 import { getCoordinatesCenter, geoLineToLeaflet, geoPointToLeaflet, geoPolygonToLeaflet, formatDateTime } from '../../utils/geoData';
+import AnimatedMachineMarker from './AnimatedMachineMarker';
 
 const structureIcon = divIcon({
   className: 'entity-map-marker structure-map-marker',
@@ -151,8 +152,8 @@ export default function EntityMap({
           const point = [Number(machine.latitude), Number(machine.longitude)];
           if (!point.every(Number.isFinite)) return null;
           return (
-            <CircleMarker
-              key={`machine-${machine.id ?? `${machine.maquina_id}-${machine.timestamp ?? index}`}`}
+            <AnimatedMachineMarker
+              key={`machine-${machine.id ?? machine.maquina_id ?? index}`}
               center={point}
               radius={8}
               eventHandlers={{ click: () => onSelectMachine?.(machine.maquina_id) }}
@@ -168,7 +169,7 @@ export default function EntityMap({
                   <><br /><strong style={{ color: '#15803d' }}>DADO REAL</strong></>
                 ) : null}
               </Popup>
-            </CircleMarker>
+            </AnimatedMachineMarker>
           );
         }) : null}
         {plannedCoordinates.length > 1 ? (

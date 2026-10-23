@@ -22,17 +22,16 @@ function durationBetween(start, end) {
 
 export default function OperationReportPage() {
   const { id } = useParams();
-  const { can } = useAuth();
+  const { can, activeFarm } = useAuth();
   const operationResource = useApiResource(`/api/v1/operations/${id}`);
   const historyResource = useApiResource(`/api/v1/operations/${id}/history`);
   const locationsResource = useApiResource(`/api/v1/operations/${id}/locations`);
+  const operationTelemetryResource = useApiResource(`/api/v1/operations/${id}/telemetry`);
   const operation = operationResource.data;
-  const telemetryResource = useApiResource(
-    operation?.machine_id ? `/api/v1/telemetry/${operation.machine_id}` : '',
-    0,
-    { enabled: Boolean(operation?.machine_id && can('telemetry.history')) },
+  const telemetry = useMemo(
+    () => asList(operationTelemetryResource.data),
+    [operationTelemetryResource.data],
   );
-  const telemetry = useMemo(() => asList(telemetryResource.data?.historico), [telemetryResource.data]);
   const locations = asList(locationsResource.data?.locations);
   const statuses = asList(historyResource.data?.statuses);
   const routes = asList(historyResource.data?.routes);
@@ -63,7 +62,7 @@ export default function OperationReportPage() {
         description="Documento consolidado a partir dos dados persistidos pelo TeleDis."
         actions={<div className="report-actions"><Link className="button button-secondary" to={`/operacoes/${id}`}><ArrowLeft size={16} />Voltar</Link><button className="button button-secondary" type="button" onClick={() => window.print()}><Printer size={16} />Imprimir / PDF</button><button className="button button-primary" type="button" onClick={exportCsv} disabled={!telemetry.length}><Download size={16} />Exportar CSV</button></div>}
       />
-      <header className="report-document-header"><div><span>TeleDis</span><strong>Centro de operação agrícola</strong></div><StatusBadge>{operation.status}</StatusBadge></header>
+      <header className="report-document-header"><div><span>TeleDis · Relatório operacional</span><strong>{operation.name || `Operação #${operation.id}`}</strong><small>{activeFarm?.name || 'Fazenda ativa'} · {formatDateTime(operation.completed_at || operation.updated_at || operation.created_at)}</small></div><StatusBadge>{operation.status}</StatusBadge></header>
       <section className="report-facts">
         <div><span>Operação</span><strong>{operation.name || operation.code || `#${operation.id}`}</strong></div>
         <div><span>Máquina</span><strong>{operation.machine_name || operation.machine_id || '—'}</strong></div>
@@ -79,7 +78,7 @@ export default function OperationReportPage() {
         <div><span>Leituras de telemetria</span><strong>{telemetry.length}</strong></div>
       </section>
       <section className="report-section"><h2>Histórico de status</h2>{statuses.length ? <ol className="report-timeline">{statuses.map((item, index) => <li key={item.id || `${item.new_status}-${index}`}><span /><div><strong>{String(item.new_status || item.status || 'Atualização').replaceAll('_', ' ')}</strong><time>{formatDateTime(item.created_at)}</time></div></li>)}</ol> : <p>Nenhum histórico adicional foi retornado.</p>}</section>
-      <section className="report-section"><h2>Telemetria associada à máquina</h2>{telemetry.length ? <div className="report-table-wrap"><table><thead><tr><th>Horário</th><th>Métrica</th><th>Valor</th><th>Unidade</th><th>Origem</th></tr></thead><tbody>{telemetry.map((item) => <tr key={item.id || `${item.timestamp}-${item.metric}`}><td>{formatDateTime(item.timestamp)}</td><td>{item.metric}</td><td>{item.valor ?? '—'}</td><td>{item.unidade || '—'}</td><td>{item.source || '—'}</td></tr>)}</tbody></table></div> : <p>Nenhuma leitura disponível para a máquina desta operação.</p>}</section>
+      <section className="report-section"><h2>Telemetria no intervalo da operação</h2>{telemetry.length ? <div className="report-table-wrap"><table><thead><tr><th>Horário</th><th>Métrica</th><th>Valor</th><th>Unidade</th><th>Origem</th></tr></thead><tbody>{telemetry.map((item) => <tr key={item.id || `${item.timestamp}-${item.metric}`}><td>{formatDateTime(item.timestamp)}</td><td>{item.metric}</td><td>{item.valor ?? '—'}</td><td>{item.unidade || '—'}</td><td>{item.source || '—'}</td></tr>)}</tbody></table></div> : <p>Nenhuma leitura da máquina foi retornada dentro da janela temporal desta operação.</p>}<p className="operation-data-note">A telemetria não possui `operation_id`; a associação usa objetivamente a máquina e o intervalo entre início e término persistidos.</p></section>
       <footer className="report-footer">Gerado pelo TeleDis · {formatDateTime(new Date().toISOString())}</footer>
     </article>
   );

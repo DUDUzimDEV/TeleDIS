@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { latLngBounds } from 'leaflet';
 import { Layers3, MapPin, Sprout, Tractor, TriangleAlert } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import FieldFormModal from '../components/map/FieldFormModal';
 import MapToolbar from '../components/map/MapToolbar';
@@ -97,6 +97,7 @@ function apiErrorMessage(payload, status, fallback) {
 }
 
 export default function OperationalMapPage() {
+  const [searchParams] = useSearchParams();
   const { activeFarm, activeFarmId, can } = useAuth();
   const operationalAreaResource = useApiResource(
     activeFarmId ? `/api/v1/farms/${activeFarmId}/operational-area` : '',
@@ -174,7 +175,9 @@ export default function OperationalMapPage() {
   const [routeOrigin, setRouteOrigin] = useState(null);
   const [routeDestination, setRouteDestination] = useState(null);
   const [machines, setMachines] = useState([]);
-  const [selectedMapMachineId, setSelectedMapMachineId] = useState(null);
+  const [selectedMapMachineId, setSelectedMapMachineId] = useState(() => Number(searchParams.get('machineId')) || null);
+  const [followMachine, setFollowMachine] = useState(false);
+  const [mapFullscreen, setMapFullscreen] = useState(false);
   const [selectedMapRoadId, setSelectedMapRoadId] = useState(null);
   const [selectedMapStructureId, setSelectedMapStructureId] = useState(null);
   const [selectedMapProblemId, setSelectedMapProblemId] = useState(null);
@@ -282,6 +285,26 @@ export default function OperationalMapPage() {
   const selectedMapMachine = mapMachineLocations.find(
     (machine) => String(machine.maquina_id) === String(selectedMapMachineId),
   );
+
+  useEffect(() => {
+    if (!followMachine || !selectedMapMachine || !mapRef.current) return;
+    const latitude = Number(selectedMapMachine.latitude);
+    const longitude = Number(selectedMapMachine.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+    mapRef.current.panTo([latitude, longitude], { animate: true, duration: 0.45 });
+  }, [followMachine, selectedMapMachine?.latitude, selectedMapMachine?.longitude]);
+
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape' && mapFullscreen) setMapFullscreen(false);
+    };
+    const frame = requestAnimationFrame(() => mapRef.current?.invalidateSize({ pan: false }));
+    if (mapFullscreen) document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape);
+      cancelAnimationFrame(frame);
+    };
+  }, [mapFullscreen]);
   const selectedMapRoad = roads.find((road) => String(road.id) === String(selectedMapRoadId));
   const selectedMapStructure = mapStructures.find((structure) => String(structure.id) === String(selectedMapStructureId));
   const selectedMapProblem = mapRoadProblems.find((problem) => String(problem.id) === String(selectedMapProblemId));
@@ -1190,6 +1213,11 @@ export default function OperationalMapPage() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen((open) => !open)}
         isSelecting={isSelecting}
+        followMachine={followMachine}
+        onToggleFollowMachine={() => setFollowMachine((active) => !active)}
+        canFollowMachine={Boolean(selectedMapMachine)}
+        fullscreen={mapFullscreen}
+        onToggleFullscreen={() => setMapFullscreen((active) => !active)}
         canCreateFields={can('fields.create')}
         canCreateRoads={can('roads.create')}
         canCreateStructures={can('structures.create')}
@@ -1383,7 +1411,7 @@ export default function OperationalMapPage() {
         </div>
       ) : null}
 
-      <div className="map-stage-layout">
+      <div className={`map-stage-layout${mapFullscreen ? ' map-stage-fullscreen' : ''}`}>
         <section className="map-canvas-column">
       <OperationalMap
         drawingMode={drawingMode}

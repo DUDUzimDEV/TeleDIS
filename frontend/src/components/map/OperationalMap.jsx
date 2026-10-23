@@ -3,6 +3,7 @@ import { divIcon, latLngBounds } from 'leaflet';
 import { CircleMarker, GeoJSON, MapContainer, Marker, Polygon, Polyline, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 
 import { getCoordinatesCenter } from '../../utils/geoData';
+import AnimatedMachineMarker from './AnimatedMachineMarker';
 
 const structureTypeLabels = {
   OFICINA: 'Oficina',
@@ -432,7 +433,7 @@ export default function OperationalMap({
 
         {visibleLayers.machines !== false ? machines.map((machine) => (
           Number.isFinite(Number(machine.latitude)) && Number.isFinite(Number(machine.longitude)) ? (
-          <CircleMarker
+          <AnimatedMachineMarker
             key={machine.maquina_id}
             center={[Number(machine.latitude), Number(machine.longitude)]}
             radius={compact ? 9 : 11}
@@ -455,7 +456,7 @@ export default function OperationalMap({
               {machine.source ? <><br />Origem GPS: {machine.source === 'SIMULATED' ? 'DADO SIMULADO' : machine.source === 'REAL' ? 'DADO REAL' : machine.source}</> : null}
               {machine.velocidade != null ? <><br />Velocidade: {machine.velocidade} km/h</> : null}
             </Popup>
-          </CircleMarker>
+          </AnimatedMachineMarker>
           ) : null
         )) : null}
 

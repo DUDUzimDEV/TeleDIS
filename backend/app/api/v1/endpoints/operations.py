@@ -133,6 +133,12 @@ def operation_locations(operation_id: int,
     return {"success": True, "data": service.operation_locations(context, operation_id)}
 
 
+@router.get("/{operation_id}/telemetry")
+def operation_telemetry(operation_id: int,
+                        context: dict = Depends(require_permission("operations.history"))):
+    return {"success": True, "data": service.operation_telemetry(context, operation_id)}
+
+
 @router.get("/{operation_id}/occurrences")
 def list_occurrences(operation_id: int,
                      context: dict = Depends(require_permission("operations.history"))):

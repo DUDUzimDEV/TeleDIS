@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { MapPin, Pencil, Plus, Search, Tractor } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { apiFetch, readApiResponse } from '../api/apiClient';
 import EntityMap from '../components/map/EntityMap';
@@ -18,6 +18,7 @@ const LIVE_REFRESH_INTERVAL_MS = 5000;
 
 export default function MachinesPage() {
   const { can } = useAuth();
+  const [searchParams] = useSearchParams();
   const machinesResource = useApiResource('/api/v1/machines', 0, { pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS });
   const locationsResource = useApiResource('/api/v1/locations?limit=1000', 0, { pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS });
   const telemetryResource = useApiResource('/api/v1/telemetry', 0, {
@@ -29,7 +30,7 @@ export default function MachinesPage() {
     0,
     { enabled: can('operations.view'), pollingIntervalMs: LIVE_REFRESH_INTERVAL_MS },
   );
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => Number(searchParams.get('machineId')) || null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');

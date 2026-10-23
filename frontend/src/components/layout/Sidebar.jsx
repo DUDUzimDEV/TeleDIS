@@ -70,7 +70,7 @@ const navigationGroups = [
   },
 ];
 
-export default function Sidebar({ mobileOpen = false, onNavigate = () => {} }) {
+export default function Sidebar({ mobileOpen = false, onNavigate = () => {}, presentationMode = false }) {
   const { can, role } = useAuth();
   const homePath = role === 'OPERATOR' ? '/operacao' : '/dashboard';
 
@@ -95,6 +95,7 @@ export default function Sidebar({ mobileOpen = false, onNavigate = () => {} }) {
       </div>
       <nav className="sidebar-nav" aria-label="Menu principal">
         {navigationGroups.map((group) => {
+          if (presentationMode && group.label === 'Administração') return null;
           const items = group.items.filter((item) => (
             can(item.permission)
             && (item.requires || []).every(can)

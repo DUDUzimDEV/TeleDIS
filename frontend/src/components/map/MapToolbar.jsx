@@ -1,5 +1,5 @@
 import React from 'react';
-import { Building2, Check, MapPin, PanelRightClose, PanelRightOpen, Route, Tractor, TriangleAlert, Waypoints, X } from 'lucide-react';
+import { Building2, Check, Crosshair, MapPin, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Route, Tractor, TriangleAlert, Waypoints, X } from 'lucide-react';
 
 function ToolButton({ active, icon: Icon, label, onClick, variant = '' }) {
   return (
@@ -45,6 +45,11 @@ export default function MapToolbar({
   canCreateStructures = false,
   canCreateRoadProblems = false,
   canPlanRoutes = false,
+  followMachine = false,
+  onToggleFollowMachine,
+  canFollowMachine = false,
+  fullscreen = false,
+  onToggleFullscreen,
 }) {
   return (
     <div className="map-toolbar">
@@ -68,6 +73,8 @@ export default function MapToolbar({
       <ToolButton active={showMachines} icon={Tractor} label="Máquinas" onClick={onToggleMachines} />
       {canPlanRoutes ? <ToolButton active={isPlanningRoute} icon={Route} label="Rota" onClick={onToggleRoutePlanning} variant="tool-blue" /> : null}
       <button type="button" className="map-tool-button map-center-button" onClick={onCenter}><MapPin size={16} /><span>Centralizar</span></button>
+      <button type="button" className={`map-tool-button${followMachine ? ' active' : ''}`} onClick={onToggleFollowMachine} disabled={!canFollowMachine} aria-pressed={followMachine} title={canFollowMachine ? 'Acompanhar a posição recebida da máquina' : 'Selecione uma máquina para acompanhar'}><Crosshair size={16} /><span>Seguir máquina</span></button>
+      <button type="button" className="map-tool-button" onClick={onToggleFullscreen} aria-pressed={fullscreen}>{fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}<span>{fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}</span></button>
       <button type="button" className="map-tool-button" onClick={onToggleInspector}>
         {inspectorOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
         <span>{inspectorOpen ? 'Ocultar painel' : 'Mostrar painel'}</span>

@@ -42,6 +42,7 @@ SCENARIO_MACHINES = (
     ("E2E TeleDis - Máquina B", "E2E-TELEDIS-MACHINE-B"),
 )
 ACTIVE_OPERATION_STATES = {"ATRIBUIDA", "ACEITA", "EM_EXECUCAO", "INTERROMPIDA"}
+TERMINAL_OPERATION_STATES = {"CONCLUIDA", "CANCELADA"}
 
 
 class ScenarioError(RuntimeError):
@@ -282,6 +283,57 @@ def _get_or_create_machine(api: Api, name: str, code: str, base_structure_id: in
     return existing
 
 
+def _is_scenario_operation(operation: dict) -> bool:
+    name = str(operation.get("name") or "")
+    return name == SCENARIO_OPERATION_NAME or name.startswith(
+        f"{SCENARIO_OPERATION_NAME} #"
+    )
+
+
+def _scenario_run_number(operation: dict) -> int:
+    name = str(operation.get("name") or "")
+    if name == SCENARIO_OPERATION_NAME:
+        return 1
+    prefix = f"{SCENARIO_OPERATION_NAME} #"
+    if name.startswith(prefix):
+        try:
+            return max(1, int(name.removeprefix(prefix)))
+        except ValueError:
+            pass
+    return 0
+
+
+def _select_prepared_operation(operations: list[dict]) -> dict | None:
+    reusable = [
+        operation
+        for operation in operations
+        if _is_scenario_operation(operation)
+        and operation.get("status") not in TERMINAL_OPERATION_STATES
+    ]
+    if len(reusable) > 1:
+        ids = sorted(operation.get("id") for operation in reusable)
+        raise ScenarioError(
+            f"Existem múltiplas operações E2E não terminais ({ids}); "
+            "finalize ou cancele a preparação excedente."
+        )
+    return reusable[0] if reusable else None
+
+
+def _next_scenario_operation_name(operations: list[dict]) -> tuple[str, int]:
+    previous_runs = [
+        _scenario_run_number(operation)
+        for operation in operations
+        if _is_scenario_operation(operation)
+    ]
+    run_number = max(previous_runs, default=0) + 1
+    name = (
+        SCENARIO_OPERATION_NAME
+        if run_number == 1
+        else f"{SCENARIO_OPERATION_NAME} #{run_number}"
+    )
+    return name, run_number
+
+
 def prepare(api_base_url: str, farm_id: int):
     admin_token, admin = _issue_local_token("admin", farm_id)
     if admin["role"] != "OWNER":
@@ -346,19 +398,16 @@ def prepare(api_base_url: str, farm_id: int):
         })
 
     operations = admin_api.collection("/operations")
-    operation = next(
-        (item for item in operations if item.get("name") == SCENARIO_OPERATION_NAME),
-        None,
-    )
-    if operation is not None and operation.get("status") in {"CONCLUIDA", "CANCELADA"}:
-        raise ScenarioError(
-            "A operação E2E anterior é terminal. Execute `cleanup --confirm` antes de preparar outra."
-        )
+    operation = _select_prepared_operation(operations)
     if operation is None:
+        operation_name, run_number = _next_scenario_operation_name(operations)
         operation = admin_api.data("POST", "/operations", {
             "operation_type": "COLHEITA",
-            "name": SCENARIO_OPERATION_NAME,
-            "description": "Operação de validação E2E; usa talhão e recursos reais da fazenda.",
+            "name": operation_name,
+            "description": (
+                f"Execução demonstrativa E2E #{run_number}; usa talhão e recursos "
+                "reais da fazenda e preserva as execuções anteriores."
+            ),
             "field_id": candidate["field"]["id"],
             "priority": "NORMAL",
         })
@@ -375,7 +424,10 @@ def prepare(api_base_url: str, farm_id: int):
     ):
         raise ScenarioError("A operação E2E existente aponta para vínculos diferentes.")
 
+    run_number = _scenario_run_number(operation)
     return {
+        "run_id": f"operation-{operation['id']}",
+        "run_number": run_number,
         "farm_id": farm_id,
         "operator_id": operator["id"],
         "team_id": team["id"],
@@ -391,7 +443,7 @@ def prepare(api_base_url: str, farm_id: int):
         "estimated_route_distance_m": round(candidate["route_distance_m"], 2),
         "estimated_route_locations": candidate["route_point_count"],
         "network": network,
-        "next": "Execute `python scripts/teledis_e2e.py run` para rodar o fluxo E2E completo.",
+        "next": "Execute `python scripts/teledis_e2e.py run` para rodar esta preparação; nenhuma limpeza é necessária.",
     }
 
 
@@ -426,9 +478,14 @@ def cleanup(farm_id: int, confirm: bool):
         operations = db.execute(
             text("""
             SELECT id, status FROM operations
-            WHERE farm_id = :farm_id AND name = :name
+            WHERE farm_id = :farm_id
+              AND (name = :name OR name LIKE :numbered_name)
             """),
-            {"farm_id": farm_id, "name": SCENARIO_OPERATION_NAME},
+            {
+                "farm_id": farm_id,
+                "name": SCENARIO_OPERATION_NAME,
+                "numbered_name": f"{SCENARIO_OPERATION_NAME} #%",
+            },
         ).all()
         if any(operation.status in ACTIVE_OPERATION_STATES for operation in operations):
             raise ScenarioError("Pare/interrompa a operação E2E antes da limpeza.")
@@ -715,7 +772,7 @@ def _latest_position(machine_id: int, farm_id: int):
         SELECT id, recorded_at, latitude, longitude, source
         FROM machine_locations
         WHERE machine_id = :machine_id AND farm_id = :farm_id
-        ORDER BY recorded_at DESC, id DESC LIMIT 1
+        ORDER BY id DESC LIMIT 1
         """,
         {"machine_id": machine_id, "farm_id": farm_id},
     )

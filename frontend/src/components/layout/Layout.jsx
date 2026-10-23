@@ -4,6 +4,13 @@ import Topbar from './Topbar';
 
 export default function Layout({ children }) {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [presentationMode, setPresentationMode] = useState(() => localStorage.getItem('teledis_presentation_mode') === 'true');
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('presentation-mode', presentationMode);
+    localStorage.setItem('teledis_presentation_mode', String(presentationMode));
+    return () => document.documentElement.classList.remove('presentation-mode');
+  }, [presentationMode]);
 
   useEffect(() => {
     if (!mobileNavigationOpen) return undefined;
@@ -27,12 +34,15 @@ export default function Layout({ children }) {
       <Sidebar
         mobileOpen={mobileNavigationOpen}
         onNavigate={() => setMobileNavigationOpen(false)}
+        presentationMode={presentationMode}
       />
 
       <main className="content-area">
         <Topbar
           menuOpen={mobileNavigationOpen}
           onMenuClick={() => setMobileNavigationOpen((open) => !open)}
+          presentationMode={presentationMode}
+          onTogglePresentation={() => setPresentationMode((active) => !active)}
         />
         <div className="page-content">{children}</div>
       </main>

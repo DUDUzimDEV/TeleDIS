@@ -19,7 +19,7 @@ from app.models.operations import (
     Team,
     TeamMember,
 )
-from app.models.telemetry import MachineLocation, RouteLocation, RoutePlan
+from app.models.telemetry import MeasurementType, MachineLocation, RouteLocation, RoutePlan, TelemetryReading
 from app.models.user import Role, User, UserFarm
 from app.repositories.route_network_repository import RouteNetworkRepository
 from app.services.audit_service import record_audit
@@ -1006,6 +1006,7 @@ class OperationalService:
                 "locations": [{
                     "latitude": row.latitude, "longitude": row.longitude,
                     "recorded_at": row.recorded_at,
+                    "source": row.source,
                     "speed": None,
                     "heading": None,
                 } for row in map_rows],
@@ -1013,6 +1014,7 @@ class OperationalService:
                     "latitude": rows[-1].latitude,
                     "longitude": rows[-1].longitude,
                     "recorded_at": rows[-1].recorded_at,
+                    "source": rows[-1].source,
                 } if rows else None),
                 "comparison": {
                     "sufficient_data": sufficient,
@@ -1036,6 +1038,40 @@ class OperationalService:
                     "deviation_tolerance_m": deviation_tolerance_m,
                 },
             }
+
+    def operation_telemetry(self, context: dict, operation_id: int):
+        with SessionLocal() as db:
+            operation = db.query(Operation).filter(
+                Operation.id == operation_id,
+                Operation.farm_id == context["farm_id"],
+            ).one_or_none()
+            self._require(operation is not None, 404, "Operação não encontrada.")
+            self._assert_operation_visible(context, operation)
+            if operation.started_at is None or operation.machine_id is None:
+                return []
+            until = operation.completed_at or operation.cancelled_at or datetime.now(timezone.utc)
+            rows = (
+                db.query(TelemetryReading, MeasurementType)
+                .join(MeasurementType, MeasurementType.id == TelemetryReading.measurement_type_id)
+                .filter(
+                    TelemetryReading.farm_id == context["farm_id"],
+                    TelemetryReading.machine_id == operation.machine_id,
+                    TelemetryReading.recorded_at >= operation.started_at,
+                    TelemetryReading.recorded_at <= until,
+                )
+                .order_by(TelemetryReading.recorded_at, TelemetryReading.id)
+                .limit(5000)
+                .all()
+            )
+            return [{
+                "id": reading.id,
+                "maquina_id": reading.machine_id,
+                "timestamp": reading.recorded_at,
+                "metric": measurement.name,
+                "valor": reading.value,
+                "unidade": measurement.unit,
+                "source": reading.source,
+            } for reading, measurement in rows]
 
     def list_occurrences(self, context: dict, operation_id: int):
         with SessionLocal() as db:

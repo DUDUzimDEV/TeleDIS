@@ -8,6 +8,22 @@ from app.main import app
 client = TestClient(app)
 
 
+def test_operation_telemetry_uses_authenticated_context_and_operation_id(monkeypatch):
+    received = {}
+
+    def operation_telemetry(context, operation_id):
+        received.update(farm_id=context["farm_id"], operation_id=operation_id)
+        return [{"id": 1, "source": "SIMULATED"}]
+
+    monkeypatch.setattr(operations.service, "operation_telemetry", operation_telemetry)
+
+    response = client.get("/api/v1/operations/10/telemetry")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == [{"id": 1, "source": "SIMULATED"}]
+    assert received == {"farm_id": 1, "operation_id": 10}
+
+
 def test_create_team_uses_active_farm_and_rejects_farm_id(monkeypatch):
     received = {}
 

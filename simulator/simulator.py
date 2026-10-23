@@ -620,8 +620,7 @@ class SimulationEngine:
     def step(self) -> tuple[MachineReading, bool]:
         if self.state.run_status is not SimulationRunStatus.RUNNING or self.clock is None:
             raise RuntimeError("O simulador precisa estar em execução para avançar.")
-        simulated_interval = self.config.interval * self.config.time_multiplier
-        reading = self.machine.next_reading(self.clock.advance(simulated_interval))
+        reading = self.machine.next_reading(self.clock.advance(self.config.interval))
         return reading, self.publisher.publish_reading(reading)
 
     def stop(self):
@@ -635,6 +634,10 @@ class SimulationEngine:
 
 
 class SimulatorApiError(RuntimeError):
+    pass
+
+
+class SimulatorConnectionError(SimulatorApiError):
     pass
 
 
@@ -709,7 +712,13 @@ class TeleDisApiClient:
                 f"Validação da API falhou (HTTP {exc.code}): {detail}"
             ) from exc
         except URLError as exc:
-            raise SimulatorApiError(f"Não foi possível validar com a API TeleDis: {exc.reason}") from exc
+            raise SimulatorConnectionError(
+                f"Não foi possível conectar à API TeleDis: {exc.reason}"
+            ) from exc
+        except TimeoutError as exc:
+            raise SimulatorConnectionError(
+                "A API TeleDis excedeu o tempo limite de resposta."
+            ) from exc
         if not isinstance(data, dict) or data.get("success") is not True:
             raise SimulatorApiError("A API TeleDis retornou uma resposta inválida.")
         return data
@@ -782,6 +791,13 @@ def run():
                     time.sleep(config.interval)
                     continue
                 reading, published = engine.step()
+            except SimulatorConnectionError as exc:
+                logger.warning(
+                    "Conexão temporariamente indisponível; ciclo sem publicação: %s",
+                    exc,
+                )
+                time.sleep(config.interval)
+                continue
             except SimulatorApiError as exc:
                 logger.error("Simulador interrompido por erro de contexto/validação: %s", exc)
                 break

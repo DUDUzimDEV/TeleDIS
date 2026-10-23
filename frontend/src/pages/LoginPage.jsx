@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiFetch } from '../api/apiClient';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +11,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -66,10 +68,15 @@ export default function LoginPage() {
             <input type="text" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="Digite seu usuário" required />
           </label>
 
-          <label>
-            Senha
-            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="Digite sua senha" required />
-          </label>
+          <div className="auth-field">
+            <label htmlFor="login-password">Senha</label>
+            <span className="password-field">
+              <input id="login-password" value={password} onChange={(event) => setPassword(event.target.value)} type={showPassword ? 'text' : 'password'} autoComplete="current-password" placeholder="Digite sua senha" required />
+              <button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'} title={showPassword ? 'Ocultar senha' : 'Mostrar senha'}>
+                {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+              </button>
+            </span>
+          </div>
 
           {error ? <div className="page-warning" role="alert">{error}</div> : null}
 

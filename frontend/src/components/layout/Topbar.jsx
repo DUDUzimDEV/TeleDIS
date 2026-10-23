@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bell, Building2, ChevronDown, ChevronRight, LogOut, Menu, Search, UserRound } from 'lucide-react';
+import { Bell, Building2, ChevronDown, ChevronRight, LogOut, Menu, MonitorPlay, Search, UserRound, X } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../../context/AuthContext';
@@ -48,7 +48,7 @@ function getBreadcrumb(pathname) {
   return [...labels, ...(segments.length > 1 ? [`#${segments[1]}`] : [])];
 }
 
-export default function Topbar({ onMenuClick = () => {}, menuOpen = false }) {
+export default function Topbar({ onMenuClick = () => {}, menuOpen = false, presentationMode = false, onTogglePresentation = () => {} }) {
   const navigate = useNavigate();
   const location = useLocation();
   const {
@@ -131,6 +131,17 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false }) {
         <div><strong>TeleDis</strong><small>Centro de operação agrícola</small></div>
       </div>
       <div className="topbar-actions">
+        <button
+          type="button"
+          className={`presentation-toggle${presentationMode ? ' active' : ''}`}
+          onClick={onTogglePresentation}
+          aria-pressed={presentationMode}
+          aria-label={presentationMode ? 'Sair do modo apresentação' : 'Ativar modo apresentação'}
+          title={presentationMode ? 'Sair do modo apresentação' : 'Modo apresentação'}
+        >
+          {presentationMode ? <X size={16} aria-hidden="true" /> : <MonitorPlay size={16} aria-hidden="true" />}
+          <span>{presentationMode ? 'Sair da apresentação' : 'Apresentação'}</span>
+        </button>
         <button
           type="button"
           className="topbar-search-trigger"

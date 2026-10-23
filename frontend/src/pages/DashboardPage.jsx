@@ -236,6 +236,18 @@ export default function DashboardPage() {
       .filter((operation) => operation.machine_id != null)
       .map((operation) => [String(operation.machine_id), operation]),
   );
+  const leadCommunication = leadOperation?.machine_id != null
+    ? communicationByMachine.get(String(leadOperation.machine_id))
+    : null;
+  const leadReadings = leadOperation?.machine_id != null
+    ? telemetry.filter((reading) => String(reading.maquina_id) === String(leadOperation.machine_id))
+      .sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))
+    : [];
+  const latestLeadMetrics = [...leadReadings.reduce((items, reading) => {
+    const key = String(reading.metric || '').toLowerCase();
+    if (key && !items.has(key)) items.set(key, reading);
+    return items;
+  }, new Map()).values()].slice(0, 4);
 
   const metrics = [
     can('machines.view') && {
@@ -325,6 +337,37 @@ export default function DashboardPage() {
         ) : null}
       {can('farm.update') && operationalAreaResource.error ? (
         <ErrorState message="Não foi possível verificar a área operacional desta fazenda." onRetry={operationalAreaResource.reload} />
+      ) : null}
+
+      {leadOperation ? (
+        <section className="dashboard-live-hero" aria-label="Operação em destaque">
+          <div className="dashboard-live-copy">
+            <span className={`dashboard-live-state state-${String(leadCommunication?.status || 'NO_DATA').toLowerCase()}`}>
+              <i />{leadCommunication?.status === 'ONLINE' ? 'AO VIVO' : leadCommunication?.status === 'STALE' ? 'DADOS DESATUALIZADOS' : 'SEM DADOS RECENTES'}
+            </span>
+            <p>OPERAÇÃO EM DESTAQUE</p>
+            <h2>{leadOperation.name || leadOperation.code || `Operação #${leadOperation.id}`}</h2>
+            <div className="dashboard-live-context">
+              <span><small>Máquina</small><strong>{leadOperation.machine_name || `Máquina ${leadOperation.machine_id}`}</strong></span>
+              <span><small>Talhão</small><strong>{leadOperation.field_name || 'Não informado'}</strong></span>
+              <span><small>Estado</small><strong>{String(leadOperation.status).replaceAll('_', ' ')}</strong></span>
+            </div>
+            {leadOperationContextResource.data?.route_progress != null ? (
+              <div className="dashboard-live-progress">
+                <span>Progresso da rota <strong>{(Number(leadOperationContextResource.data.route_progress) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}%</strong></span>
+                <div className="progress-bar-track"><div className="progress-bar-fill" style={{ width: `${Math.max(0, Math.min(100, Number(leadOperationContextResource.data.route_progress) * 100))}%` }} /></div>
+              </div>
+            ) : null}
+            <div className="dashboard-live-actions"><Link to={`/operacoes/${leadOperation.id}`}>Acompanhar operação <ArrowRight size={15} /></Link><Link to={`/mapa?machineId=${leadOperation.machine_id}`}>Ver no mapa <MapPinned size={15} /></Link></div>
+          </div>
+          <div className="dashboard-live-telemetry">
+            <header><RadioTower size={17} /><span>TELEMETRIA RECENTE</span></header>
+            {latestLeadMetrics.length ? latestLeadMetrics.map((reading) => (
+              <div key={reading.id || reading.metric}><span>{reading.metric}</span><strong>{reading.valor ?? '—'} <small>{reading.unidade || ''}</small></strong></div>
+            )) : <p>As leituras aparecerão quando a máquina enviar telemetria.</p>}
+            <footer>{leadCommunication?.timestamp ? `Atualizado ${formatDateTime(leadCommunication.timestamp)}` : 'Sem atualização registrada'}{leadCommunication?.source ? ` · ${leadCommunication.source === 'SIMULATED' ? 'DADO SIMULADO' : 'DADO REAL'}` : ''}</footer>
+          </div>
+        </section>
       ) : null}
 
       {metrics.length ? (

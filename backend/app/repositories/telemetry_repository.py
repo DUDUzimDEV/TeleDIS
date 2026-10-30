@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionLocal
 from app.models.machine import Machine
+from app.models.operations import Operation
 from app.models.telemetry import MachineLocation, MeasurementType, TelemetryReading
 from app.services.spatial_validation_service import spatial_validation_service
 
@@ -64,13 +65,24 @@ class TelemetryRepository:
         value = float(payload["valor"])
         parsed = self._parse_timestamp(payload.get("timestamp"))
         source = str(payload.get("source") or "REAL")
+        operation_id = payload.get("operation_id")
+        if operation_id is not None:
+            operation_id = int(operation_id)
 
         with SessionLocal() as db:
             machine = self._ensure_machine(db, machine_id)
+            if operation_id is not None:
+                operation = db.query(Operation).filter(
+                    Operation.id == operation_id,
+                    Operation.farm_id == machine.farm_id,
+                ).one_or_none()
+                if operation is None:
+                    raise ValueError("operation_id inválido para a fazenda da máquina.")
             measurement = self._get_or_create_measurement(db, metric, unit)
 
             reading = TelemetryReading(
                 machine_id=machine.id,
+                operation_id=operation_id,
                 measurement_type_id=measurement.id,
                 recorded_at=parsed,
                 value=value,
@@ -98,6 +110,7 @@ class TelemetryRepository:
             return {
                 "id": reading.id,
                 "maquina_id": reading.machine_id,
+                "operation_id": reading.operation_id,
                 "metric": measurement.name,
                 "valor": reading.value,
                 "unidade": measurement.unit,
@@ -118,8 +131,18 @@ class TelemetryRepository:
                 spatial_validation_service.validate_simulated_location(
                     db, machine.farm_id, latitude, longitude
                 )
+            operation_id = payload.get("operation_id")
+            if operation_id is not None:
+                operation_id = int(operation_id)
+                operation = db.query(Operation).filter(
+                    Operation.id == operation_id,
+                    Operation.farm_id == machine.farm_id,
+                ).one_or_none()
+                if operation is None:
+                    raise ValueError("operation_id inválido para a fazenda da máquina.")
             location = MachineLocation(
                 machine_id=machine.id,
+                operation_id=operation_id,
                 recorded_at=recorded_at,
                 latitude=latitude,
                 longitude=longitude,
@@ -150,6 +173,7 @@ class TelemetryRepository:
             return {
                 "id": location.id,
                 "maquina_id": location.machine_id,
+                "operation_id": location.operation_id,
                 "timestamp": self._timestamp_string(location.recorded_at),
                 "latitude": location.latitude,
                 "longitude": location.longitude,
@@ -178,6 +202,7 @@ class TelemetryRepository:
                 {
                     "id": reading.id,
                     "maquina_id": reading.machine_id,
+                    "operation_id": reading.operation_id,
                     "metric": measurement.name,
                     "valor": reading.value,
                     "unidade": measurement.unit,
@@ -200,6 +225,7 @@ class TelemetryRepository:
                 {
                     "id": location.id,
                     "maquina_id": location.machine_id,
+                    "operation_id": location.operation_id,
                     "timestamp": self._timestamp_string(location.recorded_at),
                     "latitude": location.latitude,
                     "longitude": location.longitude,

@@ -886,6 +886,19 @@ class OperationalService:
                 } for row in routes],
             }
 
+    @staticmethod
+    def _merge_association_rows(explicit_rows, fallback_rows, dedupe_key):
+        merged = []
+        seen = set()
+        for row, relation in ((explicit_rows, "EXPLICIT"), (fallback_rows, "TEMPORAL_FALLBACK")):
+            for item in row:
+                key = dedupe_key(item)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append((item, relation))
+        return merged
+
     def operation_locations(self, context: dict, operation_id: int):
         with SessionLocal() as db:
             operation = db.query(Operation).filter(
@@ -914,12 +927,41 @@ class OperationalService:
                     },
                 }
             until = operation.completed_at or datetime.now(timezone.utc)
-            rows = db.query(MachineLocation).filter(
+            explicit_rows = db.query(MachineLocation).filter(
                 MachineLocation.farm_id == context["farm_id"],
                 MachineLocation.machine_id == operation.machine_id,
+                MachineLocation.operation_id == operation.id,
+            ).order_by(MachineLocation.recorded_at, MachineLocation.id).all()
+            fallback_rows = db.query(MachineLocation).filter(
+                MachineLocation.farm_id == context["farm_id"],
+                MachineLocation.machine_id == operation.machine_id,
+                MachineLocation.operation_id.is_(None),
                 MachineLocation.recorded_at >= operation.started_at,
                 MachineLocation.recorded_at <= until,
-            ).order_by(MachineLocation.recorded_at).all()
+            ).order_by(MachineLocation.recorded_at, MachineLocation.id).all()
+            merged_rows = self._merge_association_rows(
+                explicit_rows,
+                fallback_rows,
+                lambda item: (item.machine_id, item.recorded_at, item.latitude, item.longitude),
+            )
+            rows = [row for row, _ in merged_rows]
+            association_by_key = {
+                (row.machine_id, row.recorded_at, row.latitude, row.longitude): association
+                for row, association in merged_rows
+            }
+            rows_by_assoc = [
+                {
+                    "latitude": row.latitude,
+                    "longitude": row.longitude,
+                    "recorded_at": row.recorded_at,
+                    "source": row.source,
+                    "operation_id": row.operation_id,
+                    "association_source": association_by_key[(row.machine_id, row.recorded_at, row.latitude, row.longitude)],
+                    "speed": None,
+                    "heading": None,
+                }
+                for row, _ in merged_rows
+            ]
             planned_distance = None
             route_geometry = None
             if operation.route_plan_id:
@@ -932,7 +974,8 @@ class OperationalService:
                     planned_distance = plan.distance_m
                     route_geometry = plan.route_geometry
             actual_distance = None
-            if len(rows) >= 2:
+            dialect_name = db.bind.dialect.name if db.bind is not None else None
+            if len(rows) >= 2 and dialect_name == "postgresql":
                 actual_distance = db.execute(text("""
                     SELECT ST_Length(ST_MakeLine(
                         ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)
@@ -940,9 +983,13 @@ class OperationalService:
                     )::geography)
                     FROM machine_locations
                     WHERE farm_id = :farm_id AND machine_id = :machine_id
-                      AND recorded_at >= :started_at AND recorded_at <= :ended_at
+                      AND (
+                          operation_id = :operation_id
+                          OR (operation_id IS NULL AND recorded_at >= :started_at AND recorded_at <= :ended_at)
+                      )
                 """), {
                     "farm_id": context["farm_id"], "machine_id": operation.machine_id,
+                    "operation_id": operation.id,
                     "started_at": operation.started_at, "ended_at": until,
                 }).scalar()
             duration_seconds = (
@@ -960,7 +1007,7 @@ class OperationalService:
             route_adherence_pct = None
             location_count = len(rows)
             adherence_sufficient = bool(rows and route_geometry and route_geometry.get("geometry"))
-            if adherence_sufficient:
+            if adherence_sufficient and dialect_name == "postgresql":
                 deviation = db.execute(text("""
                     WITH planned AS (
                         SELECT ST_SetSRID(ST_GeomFromGeoJSON(:route_geometry), 4326)::geography AS path
@@ -973,8 +1020,12 @@ class OperationalService:
                         CROSS JOIN planned
                         WHERE location.farm_id = :farm_id
                           AND location.machine_id = :machine_id
-                          AND location.recorded_at >= :started_at
-                          AND location.recorded_at <= :ended_at
+                          AND (
+                              location.operation_id = :operation_id
+                              OR (location.operation_id IS NULL
+                                  AND location.recorded_at >= :started_at
+                                  AND location.recorded_at <= :ended_at)
+                          )
                     )
                     SELECT count(*) FILTER (WHERE distance_m > :tolerance_m),
                            max(distance_m),
@@ -985,6 +1036,7 @@ class OperationalService:
                     "route_geometry": json.dumps(route_geometry["geometry"]),
                     "farm_id": context["farm_id"],
                     "machine_id": operation.machine_id,
+                    "operation_id": operation.id,
                     "started_at": operation.started_at,
                     "ended_at": until,
                     "tolerance_m": deviation_tolerance_m,
@@ -1002,19 +1054,27 @@ class OperationalService:
                 ]
             else:
                 map_rows = rows
-            return {
-                "locations": [{
+            map_rows_by_assoc = [
+                {
                     "latitude": row.latitude, "longitude": row.longitude,
                     "recorded_at": row.recorded_at,
                     "source": row.source,
+                    "operation_id": row.operation_id,
+                    "association_source": association_by_key[(row.machine_id, row.recorded_at, row.latitude, row.longitude)],
                     "speed": None,
                     "heading": None,
-                } for row in map_rows],
+                }
+                for row in map_rows
+            ]
+            return {
+                "locations": map_rows_by_assoc,
                 "current_position": ({
                     "latitude": rows[-1].latitude,
                     "longitude": rows[-1].longitude,
                     "recorded_at": rows[-1].recorded_at,
                     "source": rows[-1].source,
+                    "operation_id": rows[-1].operation_id,
+                    "association_source": association_by_key[(rows[-1].machine_id, rows[-1].recorded_at, rows[-1].latitude, rows[-1].longitude)],
                 } if rows else None),
                 "comparison": {
                     "sufficient_data": sufficient,
@@ -1050,28 +1110,54 @@ class OperationalService:
             if operation.started_at is None or operation.machine_id is None:
                 return []
             until = operation.completed_at or operation.cancelled_at or datetime.now(timezone.utc)
-            rows = (
+            explicit_rows = (
                 db.query(TelemetryReading, MeasurementType)
                 .join(MeasurementType, MeasurementType.id == TelemetryReading.measurement_type_id)
                 .filter(
                     TelemetryReading.farm_id == context["farm_id"],
                     TelemetryReading.machine_id == operation.machine_id,
+                    TelemetryReading.operation_id == operation.id,
+                )
+                .order_by(TelemetryReading.recorded_at, TelemetryReading.id)
+                .all()
+            )
+            fallback_rows = (
+                db.query(TelemetryReading, MeasurementType)
+                .join(MeasurementType, MeasurementType.id == TelemetryReading.measurement_type_id)
+                .filter(
+                    TelemetryReading.farm_id == context["farm_id"],
+                    TelemetryReading.machine_id == operation.machine_id,
+                    TelemetryReading.operation_id.is_(None),
                     TelemetryReading.recorded_at >= operation.started_at,
                     TelemetryReading.recorded_at <= until,
                 )
                 .order_by(TelemetryReading.recorded_at, TelemetryReading.id)
-                .limit(5000)
                 .all()
             )
-            return [{
-                "id": reading.id,
-                "maquina_id": reading.machine_id,
-                "timestamp": reading.recorded_at,
-                "metric": measurement.name,
-                "valor": reading.value,
-                "unidade": measurement.unit,
-                "source": reading.source,
-            } for reading, measurement in rows]
+            combined_rows = self._merge_association_rows(
+                explicit_rows,
+                fallback_rows,
+                lambda item: (
+                    item[0].machine_id,
+                    item[0].recorded_at,
+                    item[0].measurement_type_id,
+                    item[0].value,
+                ),
+            )
+            return [
+                {
+                    "id": reading.id,
+                    "maquina_id": reading.machine_id,
+                    "operation_id": reading.operation_id,
+                    "timestamp": reading.recorded_at,
+                    "metric": measurement.name,
+                    "valor": reading.value,
+                    "unidade": measurement.unit,
+                    "source": reading.source,
+                    "association_source": association,
+                }
+                for (reading, measurement), association in combined_rows
+            ]
 
     def list_occurrences(self, context: dict, operation_id: int):
         with SessionLocal() as db:

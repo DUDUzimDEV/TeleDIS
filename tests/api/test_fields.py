@@ -25,7 +25,7 @@ polygon = {
 
 
 def saved_field(field_id=17):
-    timestamp = datetime(2026, 10, 2, tzinfo=timezone.utc).isoformat()
+    timestamp = datetime(2026, 10, 2, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "id": field_id,
         "nome": "Talhão 01",

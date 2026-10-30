@@ -33,6 +33,9 @@ class TelemetryReading(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     machine_id: Mapped[int] = mapped_column(ForeignKey("machines.id"), nullable=False, index=True)
+    operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     measurement_type_id: Mapped[int] = mapped_column(ForeignKey("measurement_types.id"), nullable=False, index=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     value: Mapped[float] = mapped_column(Float, nullable=False)
@@ -58,6 +61,9 @@ class MachineLocation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     machine_id: Mapped[int] = mapped_column(ForeignKey("machines.id"), nullable=False, index=True)
+    operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     latitude: Mapped[float] = mapped_column(Float, nullable=False)
     longitude: Mapped[float] = mapped_column(Float, nullable=False)

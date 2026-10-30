@@ -22,6 +22,15 @@ class TelemetryService:
         if "maquina_id" not in normalized and "machine_id" in normalized:
             normalized["maquina_id"] = normalized["machine_id"]
 
+        if "operation_id" not in normalized and "operationId" in normalized:
+            normalized["operation_id"] = normalized["operationId"]
+
+        if normalized.get("operation_id") is not None:
+            try:
+                normalized["operation_id"] = int(normalized["operation_id"])
+            except (TypeError, ValueError):
+                raise ValueError("operation_id inválido")
+
         if "valor" not in normalized and "value" in normalized:
             normalized["valor"] = normalized["value"]
 
@@ -84,8 +93,16 @@ class TelemetryService:
         normalized["source"] = self._normalize_source(normalized.get("source"))
         if "maquina_id" not in normalized and "machine_id" in normalized:
             normalized["maquina_id"] = normalized["machine_id"]
+        if "operation_id" not in normalized and "operationId" in normalized:
+            normalized["operation_id"] = normalized["operationId"]
         if "timestamp" not in normalized and "recorded_at" in normalized:
             normalized["timestamp"] = normalized["recorded_at"]
+
+        if normalized.get("operation_id") is not None:
+            try:
+                normalized["operation_id"] = int(normalized["operation_id"])
+            except (TypeError, ValueError):
+                raise ValueError("operation_id inválido")
 
         try:
             normalized["maquina_id"] = int(normalized["maquina_id"])

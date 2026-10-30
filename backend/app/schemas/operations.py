@@ -51,7 +51,7 @@ class OperationCreate(StrictModel):
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_schedule(cls, values):
         start, end = values.get("scheduled_start"), values.get("scheduled_end")
         if start and end and end < start:
@@ -85,7 +85,7 @@ class OccurrenceCreate(StrictModel):
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_coordinate_pair(cls, values):
         if (values.get("latitude") is None) != (values.get("longitude") is None):
             raise ValueError("Latitude e longitude devem ser informadas juntas.")

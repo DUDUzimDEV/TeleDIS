@@ -29,6 +29,7 @@ Thumbs.db
 secrets/
 credentials/
 backups/
+_backups/
 
 # IDE
 .vscode/

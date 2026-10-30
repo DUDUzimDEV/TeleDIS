@@ -4,7 +4,7 @@ import math
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -113,6 +113,7 @@ class MachineReading:
     longitude: float
     engine_hours: float = 0.0
     source: str = SIMULATED_DATA_SOURCE
+    operation_id: int | None = None
 
 
 def build_payloads(machine_id: int, reading: MachineReading) -> dict[str, dict]:
@@ -121,6 +122,8 @@ def build_payloads(machine_id: int, reading: MachineReading) -> dict[str, dict]:
         "timestamp": reading.timestamp,
         "source": reading.source,
     }
+    if reading.operation_id is not None:
+        common["operation_id"] = reading.operation_id
     return {
         "temperatura": {
             **common,
@@ -160,6 +163,7 @@ class AgriculturalMachine:
         self.config = config
         self.latitude: float | None = None
         self.longitude: float | None = None
+        self.operation_id: int | None = None
         self.speed = 0.0
         self.fuel = 74.8
         self.engine_hours = 0.0
@@ -278,6 +282,7 @@ class AgriculturalMachine:
             latitude=round(self.latitude, 6),
             longitude=round(self.longitude, 6),
             engine_hours=round(self.engine_hours, 4),
+            operation_id=self.operation_id,
         )
 
     def payloads(self, reading: MachineReading) -> dict[str, dict]:
@@ -556,6 +561,15 @@ class SimulationEngine:
             or context_farm_id != self.config.farm_id
         ):
             raise SimulatorApiError("O contexto retornado não pertence à máquina e fazenda configuradas.")
+
+        active_operation = context.get("active_operation") or context.get("operation") or {}
+        operation_id = None
+        if isinstance(active_operation, dict):
+            try:
+                operation_id = int(active_operation.get("id"))
+            except (TypeError, ValueError):
+                operation_id = None
+        self.machine.operation_id = operation_id
 
         if not self.machine.has_position:
             current_location = context.get("current_location")

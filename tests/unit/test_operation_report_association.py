@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -93,6 +95,15 @@ def test_operation_report_prioritizes_explicit_rows_and_uses_temporal_fallback(m
             TelemetryReading(
                 machine_id=1,
                 farm_id=1,
+                operation_id=10,
+                measurement_type_id=1,
+                recorded_at=started_at + timedelta(minutes=12),
+                value=68.0,
+                source='REAL',
+            ),
+            TelemetryReading(
+                machine_id=1,
+                farm_id=1,
                 operation_id=11,
                 measurement_type_id=2,
                 recorded_at=started_at + timedelta(minutes=30),
@@ -106,6 +117,24 @@ def test_operation_report_prioritizes_explicit_rows_and_uses_temporal_fallback(m
                 measurement_type_id=1,
                 recorded_at=started_at + timedelta(minutes=12),
                 value=68.0,
+                source='REAL',
+            ),
+            TelemetryReading(
+                machine_id=1,
+                farm_id=1,
+                operation_id=None,
+                measurement_type_id=1,
+                recorded_at=started_at + timedelta(minutes=45),
+                value=69.0,
+                source='REAL',
+            ),
+            TelemetryReading(
+                machine_id=1,
+                farm_id=1,
+                operation_id=None,
+                measurement_type_id=1,
+                recorded_at=started_at - timedelta(minutes=30),
+                value=70.0,
                 source='REAL',
             ),
             MachineLocation(
@@ -129,10 +158,37 @@ def test_operation_report_prioritizes_explicit_rows_and_uses_temporal_fallback(m
             MachineLocation(
                 machine_id=1,
                 farm_id=1,
+                operation_id=10,
+                recorded_at=started_at + timedelta(minutes=5),
+                latitude=-22.1,
+                longitude=-47.1,
+                source='REAL',
+            ),
+            MachineLocation(
+                machine_id=1,
+                farm_id=1,
                 operation_id=11,
                 recorded_at=started_at + timedelta(minutes=15),
                 latitude=-21.0,
                 longitude=-46.0,
+                source='REAL',
+            ),
+            MachineLocation(
+                machine_id=1,
+                farm_id=1,
+                operation_id=None,
+                recorded_at=started_at + timedelta(minutes=15),
+                latitude=-22.2,
+                longitude=-47.2,
+                source='REAL',
+            ),
+            MachineLocation(
+                machine_id=1,
+                farm_id=1,
+                operation_id=None,
+                recorded_at=started_at - timedelta(minutes=30),
+                latitude=-22.3,
+                longitude=-47.3,
                 source='REAL',
             ),
         ])
@@ -142,13 +198,59 @@ def test_operation_report_prioritizes_explicit_rows_and_uses_temporal_fallback(m
     context = {'farm_id': 1, 'role': 'COORDINATOR', 'user': {'id': 99}, 'permissions': {'operations.history'}}
 
     telemetry = service.operation_telemetry(context, 10)
-    assert [row['association_source'] for row in telemetry] == ['EXPLICIT', 'TEMPORAL_FALLBACK']
+    assert [row['association_source'] for row in telemetry] == [
+        'EXPLICIT',
+        'EXPLICIT',
+        'TEMPORAL_FALLBACK',
+    ]
     assert {row['operation_id'] for row in telemetry if row['association_source'] == 'EXPLICIT'} == {10}
     assert all(row['operation_id'] is None for row in telemetry if row['association_source'] == 'TEMPORAL_FALLBACK')
-    assert len(telemetry) == 2
+    assert len(telemetry) == 3
+    timestamps = [row['timestamp'] for row in telemetry]
+    assert timestamps == sorted(timestamps)
 
     locations = service.operation_locations(context, 10)
-    assert [row['association_source'] for row in locations['locations']] == ['EXPLICIT', 'TEMPORAL_FALLBACK']
+    assert [row['association_source'] for row in locations['locations']] == [
+        'EXPLICIT',
+        'EXPLICIT',
+        'TEMPORAL_FALLBACK',
+    ]
     assert {row['operation_id'] for row in locations['locations'] if row['association_source'] == 'EXPLICIT'} == {10}
     assert all(row['operation_id'] is None for row in locations['locations'] if row['association_source'] == 'TEMPORAL_FALLBACK')
-    assert len(locations['locations']) == 2
+    assert len(locations['locations']) == 3
+    location_timestamps = [row['recorded_at'] for row in locations['locations']]
+    assert location_timestamps == sorted(location_timestamps)
+
+
+def test_operation_report_cannot_query_another_farm(monkeypatch):
+    session_factory = _session_factory()
+    monkeypatch.setattr(operations_service_module, 'SessionLocal', session_factory)
+    started_at = datetime(2026, 1, 2, 8, 0, tzinfo=timezone.utc)
+    with session_factory() as db:
+        db.add(Operation(
+            id=10,
+            farm_id=1,
+            code='OP-10',
+            operation_type='COLHEITA',
+            name='Operação 10',
+            field_id=100,
+            machine_id=1,
+            status='EM_EXECUCAO',
+            created_by=99,
+            created_at=started_at,
+            updated_at=started_at,
+            started_at=started_at,
+        ))
+        db.commit()
+
+    context = {
+        'farm_id': 2,
+        'role': 'COORDINATOR',
+        'user': {'id': 99},
+        'permissions': {'operations.history'},
+    }
+
+    with pytest.raises(HTTPException) as error:
+        OperationalService().operation_telemetry(context, 10)
+
+    assert error.value.status_code == 404

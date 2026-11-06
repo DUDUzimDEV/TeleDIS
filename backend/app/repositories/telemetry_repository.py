@@ -104,7 +104,11 @@ class TelemetryRepository:
                     TelemetryReading.recorded_at == parsed,
                     TelemetryReading.source == source,
                 ).one_or_none()
-                if reading is None or reading.value != value:
+                if (
+                    reading is None
+                    or reading.value != value
+                    or reading.operation_id != operation_id
+                ):
                     raise ValueError("Conflito de identidade em evento de telemetria simulada.")
 
             return {
@@ -167,6 +171,7 @@ class TelemetryRepository:
                     location is None
                     or location.latitude != latitude
                     or location.longitude != longitude
+                    or location.operation_id != operation_id
                 ):
                     raise ValueError("Conflito de identidade em evento de localização simulada.")
 

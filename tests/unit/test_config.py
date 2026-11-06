@@ -38,3 +38,5 @@ def test_development_settings_keep_development_defaults():
     assert settings.secret_key == "change-me"
     assert settings.jwt_secret == "change-me"
     assert settings.default_admin_password == "Admin@123"
+    assert settings.mqtt_username is None
+    assert settings.mqtt_password is None

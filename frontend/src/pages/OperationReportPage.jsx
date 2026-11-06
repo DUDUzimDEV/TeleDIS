@@ -8,9 +8,9 @@ import StatusBadge from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { formatDateTime } from '../utils/geoData';
+import { buildOperationReportCsv } from '../utils/operationReportCsv';
 
 const asList = (value) => Array.isArray(value) ? value : [];
-const csvCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
 function durationBetween(start, end) {
   const startDate = new Date(start);
@@ -37,25 +37,13 @@ export default function OperationReportPage() {
   const routes = asList(historyResource.data?.routes);
 
   function exportCsv() {
-    const rows = [
-      ['timestamp', 'machine', 'metric', 'value', 'unit', 'source', 'operation_id'],
-      ...telemetry.map((item) => [
-        item.timestamp,
-        operation.machine_name || operation.machine_id,
-        item.metric,
-        item.valor,
-        item.unidade,
-        item.source,
-        item.operation_id ?? '',
-      ]),
-    ];
-    const content = `\uFEFF${rows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`;
-    const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }));
+    const csv = buildOperationReportCsv(operation, telemetry);
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = `teledis-operacao-${id}-telemetria.csv`;
     anchor.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   if (operationResource.loading) return <LoadingState label="Preparando relatório operacional..." />;
@@ -86,7 +74,7 @@ export default function OperationReportPage() {
         <div><span>Leituras de telemetria</span><strong>{telemetry.length}</strong></div>
       </section>
       <section className="report-section"><h2>Histórico de status</h2>{statuses.length ? <ol className="report-timeline">{statuses.map((item, index) => <li key={item.id || `${item.new_status}-${index}`}><span /><div><strong>{String(item.new_status || item.status || 'Atualização').replaceAll('_', ' ')}</strong><time>{formatDateTime(item.created_at)}</time></div></li>)}</ol> : <p>Nenhum histórico adicional foi retornado.</p>}</section>
-      <section className="report-section"><h2>Telemetria no intervalo da operação</h2>{telemetry.length ? <div className="report-table-wrap"><table><thead><tr><th>Horário</th><th>Métrica</th><th>Valor</th><th>Unidade</th><th>Origem</th><th>Operação</th></tr></thead><tbody>{telemetry.map((item) => <tr key={item.id || `${item.timestamp}-${item.metric}`}><td>{formatDateTime(item.timestamp)}</td><td>{item.metric}</td><td>{item.valor ?? '—'}</td><td>{item.unidade || '—'}</td><td>{item.source || '—'}</td><td>{item.operation_id ?? 'Histórico temporal'}</td></tr>)}</tbody></table></div> : <p>Nenhuma leitura da máquina foi retornada dentro da janela temporal desta operação.</p>}<p className="operation-data-note">Vínculo explícito tem precedência; registros sem `operation_id` são exibidos apenas como histórico temporal e não como associação persistida.</p></section>
+      <section className="report-section"><h2>Telemetria no intervalo da operação</h2>{telemetry.length ? <div className="report-table-wrap"><table><thead><tr><th>Horário</th><th>Métrica</th><th>Valor</th><th>Unidade</th><th>Origem</th><th>Operação</th><th>Tipo de vínculo</th></tr></thead><tbody>{telemetry.map((item) => <tr key={item.id || `${item.timestamp}-${item.metric}`}><td>{formatDateTime(item.timestamp)}</td><td>{item.metric}</td><td>{item.valor ?? '—'}</td><td>{item.unidade || '—'}</td><td>{item.source || '—'}</td><td>{item.operation_id ?? '—'}</td><td>{item.association_source || (item.operation_id == null ? 'UNLINKED' : 'EXPLICIT')}</td></tr>)}</tbody></table></div> : <p>Nenhuma leitura da máquina foi retornada dentro da janela temporal desta operação.</p>}<p className="operation-data-note">EXPLICIT identifica vínculo persistido; TEMPORAL_FALLBACK é apenas correlação pela janela da operação e não altera `operation_id`; UNLINKED indica ausência de vínculo e de fallback aplicável.</p></section>
       <footer className="report-footer">Gerado pelo TeleDis · {formatDateTime(new Date().toISOString())}</footer>
     </article>
   );

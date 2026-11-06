@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models.machine import Machine
+from app.models.operations import Operation
 from app.models.telemetry import MachineLocation, MeasurementType, TelemetryReading
 from app.repositories import telemetry_repository
 from app.repositories.telemetry_repository import TelemetryRepository
@@ -90,6 +91,7 @@ def test_simulated_mqtt_retries_are_idempotent_without_deduplicating_real_data(m
     engine = create_engine("sqlite://")
     tables = [
         Machine.__table__,
+        Operation.__table__,
         MeasurementType.__table__,
         TelemetryReading.__table__,
         MachineLocation.__table__,
@@ -142,5 +144,160 @@ def test_simulated_mqtt_retries_are_idempotent_without_deduplicating_real_data(m
     with session_factory() as db:
         assert db.query(func.count(TelemetryReading.id)).scalar() == 2
         assert db.query(func.count(MachineLocation.id)).scalar() == 2
+
+    engine.dispose()
+
+
+def _operation(operation_id, farm_id):
+    timestamp = datetime(2026, 10, 1, 14, 0, tzinfo=timezone.utc)
+    return Operation(
+        id=operation_id,
+        farm_id=farm_id,
+        code=f"OP-{operation_id}",
+        operation_type="COLHEITA",
+        name=f"Operação {operation_id}",
+        field_id=1,
+        status="EM_EXECUCAO",
+        created_by=1,
+        created_at=timestamp,
+        updated_at=timestamp,
+        started_at=timestamp,
+    )
+
+
+def test_explicit_operation_is_validated_and_legacy_payload_stays_unlinked(monkeypatch):
+    engine = create_engine("sqlite://")
+    tables = [
+        Machine.__table__,
+        Operation.__table__,
+        MeasurementType.__table__,
+        TelemetryReading.__table__,
+        MachineLocation.__table__,
+    ]
+    Base.metadata.create_all(engine, tables=tables)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as db:
+        db.add(Machine(id=7, name="Test", code="SIM-7", farm_id=42))
+        db.add_all([_operation(10, 42), _operation(11, 99)])
+        db.commit()
+
+    monkeypatch.setattr(telemetry_repository, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        spatial_validation_service,
+        "validate_simulated_location",
+        lambda *args: None,
+    )
+    repository = TelemetryRepository()
+    timestamp = "2026-10-01T14:10:00Z"
+
+    explicit_reading = repository.create_reading({
+        "maquina_id": 7,
+        "operation_id": 10,
+        "timestamp": timestamp,
+        "metric": "temperatura",
+        "valor": 21.5,
+    })
+    legacy_reading = repository.create_reading({
+        "maquina_id": 7,
+        "timestamp": "2026-10-01T14:11:00Z",
+        "metric": "temperatura",
+        "valor": 21.6,
+    })
+    explicit_location = repository.create_location({
+        "maquina_id": 7,
+        "operation_id": 10,
+        "timestamp": timestamp,
+        "latitude": -23.5,
+        "longitude": -47.4,
+    })
+    legacy_location = repository.create_location({
+        "maquina_id": 7,
+        "timestamp": "2026-10-01T14:11:00Z",
+        "latitude": -23.5,
+        "longitude": -47.4,
+    })
+
+    assert explicit_reading["operation_id"] == 10
+    assert explicit_location["operation_id"] == 10
+    assert legacy_reading["operation_id"] is None
+    assert legacy_location["operation_id"] is None
+
+    for invalid_operation_id in (999, 11):
+        with pytest.raises(ValueError, match="operation_id inválido"):
+            repository.create_reading({
+                "maquina_id": 7,
+                "operation_id": invalid_operation_id,
+                "timestamp": f"2026-10-01T14:{invalid_operation_id % 60:02d}:00Z",
+                "metric": "temperatura",
+                "valor": 22.0,
+            })
+        with pytest.raises(ValueError, match="operation_id inválido"):
+            repository.create_location({
+                "maquina_id": 7,
+                "operation_id": invalid_operation_id,
+                "timestamp": f"2026-10-01T15:{invalid_operation_id % 60:02d}:00Z",
+                "latitude": -23.5,
+                "longitude": -47.4,
+            })
+
+    with session_factory() as db:
+        assert db.query(TelemetryReading).count() == 2
+        assert db.query(MachineLocation).count() == 2
+
+    engine.dispose()
+
+
+def test_simulated_retries_cannot_change_explicit_operation_linkage(monkeypatch):
+    engine = create_engine("sqlite://")
+    tables = [
+        Machine.__table__,
+        Operation.__table__,
+        MeasurementType.__table__,
+        TelemetryReading.__table__,
+        MachineLocation.__table__,
+    ]
+    Base.metadata.create_all(engine, tables=tables)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as db:
+        db.add(Machine(id=7, name="Test", code="SIM-7", farm_id=42))
+        db.add_all([_operation(10, 42), _operation(11, 42)])
+        db.commit()
+
+    monkeypatch.setattr(telemetry_repository, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        spatial_validation_service,
+        "validate_simulated_location",
+        lambda *args: None,
+    )
+    repository = TelemetryRepository()
+    reading = {
+        "maquina_id": 7,
+        "operation_id": 10,
+        "timestamp": "2026-10-01T14:10:00Z",
+        "metric": "temperatura",
+        "valor": 21.5,
+        "source": "SIMULATED",
+    }
+    location = {
+        "maquina_id": 7,
+        "operation_id": 10,
+        "timestamp": "2026-10-01T14:10:00Z",
+        "latitude": -23.5,
+        "longitude": -47.4,
+        "source": "SIMULATED",
+    }
+
+    repository.create_reading(reading)
+    repository.create_location(location)
+    with pytest.raises(ValueError, match="Conflito de identidade"):
+        repository.create_reading({**reading, "operation_id": 11})
+    with pytest.raises(ValueError, match="Conflito de identidade"):
+        repository.create_location({**location, "operation_id": 11})
+
+    with session_factory() as db:
+        assert db.query(TelemetryReading).count() == 1
+        assert db.query(MachineLocation).count() == 1
+        assert db.query(TelemetryReading).one().operation_id == 10
+        assert db.query(MachineLocation).one().operation_id == 10
 
     engine.dispose()

@@ -951,6 +951,7 @@ class OperationalService:
             }
             rows_by_assoc = [
                 {
+                    "id": row.id,
                     "latitude": row.latitude,
                     "longitude": row.longitude,
                     "recorded_at": row.recorded_at,
@@ -1056,6 +1057,7 @@ class OperationalService:
                 map_rows = rows
             map_rows_by_assoc = [
                 {
+                    "id": row.id,
                     "latitude": row.latitude, "longitude": row.longitude,
                     "recorded_at": row.recorded_at,
                     "source": row.source,
@@ -1069,6 +1071,7 @@ class OperationalService:
             return {
                 "locations": map_rows_by_assoc,
                 "current_position": ({
+                    "id": rows[-1].id,
                     "latitude": rows[-1].latitude,
                     "longitude": rows[-1].longitude,
                     "recorded_at": rows[-1].recorded_at,

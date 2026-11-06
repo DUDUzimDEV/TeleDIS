@@ -24,6 +24,30 @@ def test_operation_telemetry_uses_authenticated_context_and_operation_id(monkeyp
     assert received == {"farm_id": 1, "operation_id": 10}
 
 
+def test_operation_telemetry_requires_history_permission(monkeypatch):
+    def limited_context():
+        return {
+            "user": {"id": 2},
+            "farm_id": 1,
+            "role": "ANALYST",
+            "permissions": {"operations.view"},
+        }
+
+    previous = app.dependency_overrides[get_farm_context]
+    app.dependency_overrides[get_farm_context] = limited_context
+    monkeypatch.setattr(
+        operations.service,
+        "operation_telemetry",
+        lambda *_args: pytest.fail("service must not run"),
+    )
+    try:
+        response = client.get("/api/v1/operations/10/telemetry")
+    finally:
+        app.dependency_overrides[get_farm_context] = previous
+
+    assert response.status_code == 403
+
+
 def test_create_team_uses_active_farm_and_rejects_farm_id(monkeypatch):
     received = {}
 

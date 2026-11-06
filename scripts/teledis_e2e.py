@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.config import get_settings
 from app.core.security import create_access_token
 import app.database as database
+from app.models.machine import Machine
 from app.models.user import Farm, Role, User, UserFarm
 from simulator.simulator import SimulatorConfig
 
@@ -38,15 +39,19 @@ SCENARIO_BASE_NAME = "E2E TeleDis - Base"
 SCENARIO_TEAM_CODE = "E2E-TELEDIS-001"
 SCENARIO_OPERATION_NAME = "E2E TeleDis - Colheita"
 SCENARIO_MACHINES = (
-    ("E2E TeleDis - Máquina A", "E2E-TELEDIS-MACHINE-A"),
-    ("E2E TeleDis - Máquina B", "E2E-TELEDIS-MACHINE-B"),
+    ("E2E TeleDis - Máquina A", "A"),
+    ("E2E TeleDis - Máquina B", "B"),
 )
-ACTIVE_OPERATION_STATES = {"ATRIBUIDA", "ACEITA", "EM_EXECUCAO", "INTERROMPIDA"}
+ISOLATED_FARM_CODE_PREFIX = "E2E-ISOLATED-"
 TERMINAL_OPERATION_STATES = {"CONCLUIDA", "CANCELADA"}
 
 
 class ScenarioError(RuntimeError):
     pass
+
+
+def _scenario_machine_code(farm_id: int, machine_suffix: str) -> str:
+    return f"E2E-TELEDIS-FARM-{farm_id}-MACHINE-{machine_suffix}"
 
 
 def _require_development_environment():
@@ -56,9 +61,14 @@ def _require_development_environment():
     return settings
 
 
+def _host_for_local_process(host: str) -> str:
+    return "localhost" if host.lower() in {"mqtt", "teledis-mqtt"} else host
+
+
 def _configure_local_database():
     global SessionLocal
     settings = _require_development_environment()
+    os.environ["MQTT_HOST"] = _host_for_local_process(settings.mqtt_host)
     database_url = make_url(settings.database_url)
     if database_url.host in {"postgres", "teledis-postgres"}:
         database_url = database_url.set(host="localhost")
@@ -244,14 +254,16 @@ def _select_base_and_field(roads: list[dict], fields: list[dict], snap_limit_m: 
     return candidates[0]
 
 
-def _get_or_create_structure(api: Api, candidate: dict):
+def _create_scenario_structure(api: Api, candidate: dict):
     structures = api.collection("/structures")
     existing = next(
         (item for item in structures if item.get("nome") == SCENARIO_BASE_NAME),
         None,
     )
     if existing is not None:
-        return existing
+        raise ScenarioError(
+            "A estrutura reservada ao E2E já existe; use uma fazenda isolada nova."
+        )
     longitude, latitude = candidate["base"]
     return api.data("POST", "/structures", {
         "nome": SCENARIO_BASE_NAME,
@@ -264,23 +276,19 @@ def _get_or_create_structure(api: Api, candidate: dict):
     })
 
 
-def _get_or_create_machine(api: Api, name: str, code: str, base_structure_id: int):
+def _create_scenario_machine(api: Api, name: str, code: str, base_structure_id: int):
     machines = api.collection("/machines")
     existing = next((machine for machine in machines if machine.get("code") == code), None)
-    if existing is None:
-        return api.data("POST", "/machines", {
-            "name": name,
-            "code": code,
-            "status": "active",
-            "base_structure_id": base_structure_id,
-        })
-    if existing.get("base_structure_id") not in (None, base_structure_id):
-        raise ScenarioError(f"A máquina E2E {code} já aponta para outra estrutura-base.")
-    if existing.get("base_structure_id") is None:
-        existing = api.data("PATCH", f"/machines/{existing['id']}", {
-            "base_structure_id": base_structure_id,
-        })
-    return existing
+    if existing is not None:
+        raise ScenarioError(
+            f"A máquina reservada ao E2E {code} já existe; use uma fazenda isolada nova."
+        )
+    return api.data("POST", "/machines", {
+        "name": name,
+        "code": code,
+        "status": "active",
+        "base_structure_id": base_structure_id,
+    })
 
 
 def _is_scenario_operation(operation: dict) -> bool:
@@ -314,9 +322,30 @@ def _select_prepared_operation(operations: list[dict]) -> dict | None:
         ids = sorted(operation.get("id") for operation in reusable)
         raise ScenarioError(
             f"Existem múltiplas operações E2E não terminais ({ids}); "
-            "finalize ou cancele a preparação excedente."
+            "o runner não reutiliza nem altera operações preparadas anteriormente."
         )
-    return reusable[0] if reusable else None
+    if reusable:
+        raise ScenarioError(
+            f"A operação E2E #{reusable[0].get('id')} não é terminal; "
+            "o runner não reutiliza nem altera operações preparadas anteriormente."
+        )
+    return None
+
+
+def _require_isolated_farm(farm_id: int):
+    with SessionLocal() as db:
+        farm = db.get(Farm, farm_id)
+    if (
+        farm is None
+        or farm.status != "active"
+        or not str(farm.code or "").startswith(ISOLATED_FARM_CODE_PREFIX)
+    ):
+        raise ScenarioError(
+            "O cenário E2E exige uma fazenda ativa e exclusiva com código "
+            f"iniciado por {ISOLATED_FARM_CODE_PREFIX!r}; nenhuma fazenda de negócio "
+            "pode ser usada."
+        )
+    return farm
 
 
 def _next_scenario_operation_name(operations: list[dict]) -> tuple[str, int]:
@@ -335,9 +364,10 @@ def _next_scenario_operation_name(operations: list[dict]) -> tuple[str, int]:
 
 
 def prepare(api_base_url: str, farm_id: int):
+    _require_isolated_farm(farm_id)
     admin_token, admin = _issue_local_token("admin", farm_id)
     if admin["role"] != "OWNER":
-        raise ScenarioError("A preparação requer o perfil OWNER da fazenda de desenvolvimento.")
+        raise ScenarioError("A preparação requer OWNER na fazenda E2E isolada.")
     operator_candidates = [
         user for user in Api(api_base_url, farm_id, admin_token).collection("/users")
         if user.get("role") == "OPERATOR" and user.get("status") == "active"
@@ -347,20 +377,37 @@ def prepare(api_base_url: str, farm_id: int):
     operator = operator_candidates[0]
     admin_api = Api(api_base_url, farm_id, admin_token)
     existing_machines = admin_api.collection("/machines")
-    existing_machine_a = next(
-        (item for item in existing_machines if item.get("code") == SCENARIO_MACHINES[0][1]),
-        None,
-    )
-    if (
-        operator.get("assigned_machine_id") is not None
-        and (
-            existing_machine_a is None
-            or operator["assigned_machine_id"] != existing_machine_a["id"]
+    reserved_machine_codes = {
+        _scenario_machine_code(farm_id, suffix)
+        for _, suffix in SCENARIO_MACHINES
+    }
+    if any(machine.get("code") in reserved_machine_codes for machine in existing_machines):
+        raise ScenarioError("A fazenda E2E já contém máquinas de teste; use uma fazenda isolada nova.")
+    with SessionLocal() as db:
+        existing_codes = {
+            row[0] for row in db.query(Machine.code)
+            .filter(Machine.code.in_(reserved_machine_codes))
+            .all()
+        }
+    if existing_codes:
+        raise ScenarioError(
+            f"Códigos de máquina reservados já existem globalmente: {sorted(existing_codes)}."
         )
-    ):
+    if operator.get("assigned_machine_id") is not None:
         raise ScenarioError(
             f"O operador {operator['id']} já está atribuído à máquina "
             f"{operator['assigned_machine_id']}; nenhum vínculo existente foi alterado."
+        )
+    if any(item.get("nome") == SCENARIO_BASE_NAME for item in admin_api.collection("/structures")):
+        raise ScenarioError("A fazenda E2E já contém uma estrutura de teste; use uma fazenda isolada nova.")
+    if any(item.get("code") == SCENARIO_TEAM_CODE for item in admin_api.collection("/teams")):
+        raise ScenarioError("A fazenda E2E já contém uma equipe de teste; use uma fazenda isolada nova.")
+    operations = admin_api.collection("/operations")
+    _select_prepared_operation(operations)
+    if operations:
+        raise ScenarioError(
+            "A fazenda E2E já contém operações; use uma fazenda isolada nova. "
+            "Nenhuma operação existente foi modificada."
         )
     roads = admin_api.collection("/roads")
     fields = admin_api.collection("/fields")
@@ -371,25 +418,27 @@ def prepare(api_base_url: str, farm_id: int):
 
     # Rebuild only the existing derived road graph through its API.
     network = admin_api.data("POST", "/routes/network/rebuild")
-    structure = _get_or_create_structure(admin_api, candidate)
+    structure = _create_scenario_structure(admin_api, candidate)
     machine_a, machine_b = [
-        _get_or_create_machine(admin_api, name, code, structure["id"])
-        for name, code in SCENARIO_MACHINES
+        _create_scenario_machine(
+            admin_api,
+            name,
+            _scenario_machine_code(farm_id, suffix),
+            structure["id"],
+        )
+        for name, suffix in SCENARIO_MACHINES
     ]
 
-    teams = admin_api.collection("/teams")
-    team = next((item for item in teams if item.get("code") == SCENARIO_TEAM_CODE), None)
-    if team is None:
-        supervisors = [
-            user for user in admin_api.collection("/users")
-            if user.get("role") == "SUPERVISOR" and user.get("status") == "active"
-        ]
-        team = admin_api.data("POST", "/teams", {
-            "name": "E2E TeleDis - Equipe",
-            "code": SCENARIO_TEAM_CODE,
-            "description": "Equipe descartável do cenário E2E de desenvolvimento.",
-            "supervisor_id": supervisors[0]["id"] if supervisors else None,
-        })
+    supervisors = [
+        user for user in admin_api.collection("/users")
+        if user.get("role") == "SUPERVISOR" and user.get("status") == "active"
+    ]
+    team = admin_api.data("POST", "/teams", {
+        "name": "E2E TeleDis - Equipe",
+        "code": SCENARIO_TEAM_CODE,
+        "description": "Equipe da execução isolada do cenário E2E de desenvolvimento.",
+        "supervisor_id": supervisors[0]["id"] if supervisors else None,
+    })
     members = admin_api.collection(f"/teams/{team['id']}/members")
     if not any(member.get("user_id") == operator["id"] for member in members):
         admin_api.data("POST", f"/teams/{team['id']}/members", {
@@ -397,32 +446,22 @@ def prepare(api_base_url: str, farm_id: int):
             "team_role": "OPERATOR",
         })
 
-    operations = admin_api.collection("/operations")
-    operation = _select_prepared_operation(operations)
-    if operation is None:
-        operation_name, run_number = _next_scenario_operation_name(operations)
-        operation = admin_api.data("POST", "/operations", {
-            "operation_type": "COLHEITA",
-            "name": operation_name,
-            "description": (
-                f"Execução demonstrativa E2E #{run_number}; usa talhão e recursos "
-                "reais da fazenda e preserva as execuções anteriores."
-            ),
-            "field_id": candidate["field"]["id"],
-            "priority": "NORMAL",
-        })
-    if operation.get("status") == "PLANEJADA":
-        operation = admin_api.data("POST", f"/operations/{operation['id']}/assign", {
-            "machine_id": machine_a["id"],
-            "operator_id": operator["id"],
-            "team_id": team["id"],
-        })
-    elif (
-        operation.get("machine_id") != machine_a["id"]
-        or operation.get("operator_id") != operator["id"]
-        or operation.get("team_id") != team["id"]
-    ):
-        raise ScenarioError("A operação E2E existente aponta para vínculos diferentes.")
+    operation_name, run_number = _next_scenario_operation_name(operations)
+    operation = admin_api.data("POST", "/operations", {
+        "operation_type": "COLHEITA",
+        "name": operation_name,
+        "description": (
+            f"Execução demonstrativa E2E #{run_number} em fazenda isolada; "
+            "os registros desta execução serão preservados para auditoria."
+        ),
+        "field_id": candidate["field"]["id"],
+        "priority": "NORMAL",
+    })
+    operation = admin_api.data("POST", f"/operations/{operation['id']}/assign", {
+        "machine_id": machine_a["id"],
+        "operator_id": operator["id"],
+        "team_id": team["id"],
+    })
 
     run_number = _scenario_run_number(operation)
     return {
@@ -443,170 +482,21 @@ def prepare(api_base_url: str, farm_id: int):
         "estimated_route_distance_m": round(candidate["route_distance_m"], 2),
         "estimated_route_locations": candidate["route_point_count"],
         "network": network,
-        "next": "Execute `python scripts/teledis_e2e.py run` para rodar esta preparação; nenhuma limpeza é necessária.",
+        "next": (
+            f"Execute `python scripts/teledis_e2e.py run --farm-id {farm_id} "
+            f"--operation-id {operation['id']}`. "
+            "Os registros de teste serão preservados."
+        ),
     }
 
 
-def cleanup(farm_id: int, confirm: bool):
-    if not confirm:
-        raise ScenarioError("A limpeza exige a confirmação explícita `cleanup --confirm`.")
-    _require_development_environment()
-    with SessionLocal.begin() as db:
-        machine_codes = [code for _, code in SCENARIO_MACHINES]
-        machines = db.execute(
-            text("""
-            SELECT id FROM machines
-            WHERE farm_id = :farm_id AND code = ANY(:codes)
-            """),
-            {"farm_id": farm_id, "codes": machine_codes},
-        ).scalars().all()
-        machine_ids = list(machines)
-        team_id = db.execute(
-            text("""
-            SELECT id FROM teams
-            WHERE farm_id = :farm_id AND code = :code
-            """),
-            {"farm_id": farm_id, "code": SCENARIO_TEAM_CODE},
-        ).scalar_one_or_none()
-        structure_id = db.execute(
-            text("""
-            SELECT id FROM structures
-            WHERE farm_id = :farm_id AND nome = :name
-            """),
-            {"farm_id": farm_id, "name": SCENARIO_BASE_NAME},
-        ).scalar_one_or_none()
-        operations = db.execute(
-            text("""
-            SELECT id, status FROM operations
-            WHERE farm_id = :farm_id
-              AND (name = :name OR name LIKE :numbered_name)
-            """),
-            {
-                "farm_id": farm_id,
-                "name": SCENARIO_OPERATION_NAME,
-                "numbered_name": f"{SCENARIO_OPERATION_NAME} #%",
-            },
-        ).all()
-        if any(operation.status in ACTIVE_OPERATION_STATES for operation in operations):
-            raise ScenarioError("Pare/interrompa a operação E2E antes da limpeza.")
-        operation_ids = [operation.id for operation in operations]
-        route_ids = db.execute(
-            text("""
-            SELECT id FROM route_plans
-            WHERE farm_id = :farm_id
-              AND (
-                id IN (
-                    SELECT route_plan_id FROM operations
-                    WHERE farm_id = :farm_id AND id = ANY(:operation_ids)
-                    UNION
-                    SELECT route_plan_id FROM operation_route_history
-                    WHERE farm_id = :farm_id AND operation_id = ANY(:operation_ids)
-                )
-              )
-            """),
-            {
-                "farm_id": farm_id,
-                "operation_ids": operation_ids or [-1],
-            },
-        ).scalars().all()
-
-        if structure_id is not None:
-            other_machines = db.execute(
-                text("""
-                SELECT id FROM machines
-                WHERE farm_id = :farm_id AND base_structure_id = :structure_id
-                  AND id != ALL(:machine_ids)
-                """),
-                {
-                    "farm_id": farm_id,
-                    "structure_id": structure_id,
-                    "machine_ids": machine_ids or [-1],
-                },
-            ).scalars().all()
-            if other_machines:
-                raise ScenarioError(
-                    f"A estrutura E2E é usada por máquinas não pertencentes ao cenário: {other_machines}."
-                )
-
-        if route_ids:
-            db.execute(
-                text("DELETE FROM route_locations WHERE farm_id = :farm_id AND route_id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": route_ids},
-            )
-        if operation_ids:
-            db.execute(
-                text("DELETE FROM operation_occurrences WHERE farm_id = :farm_id AND operation_id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": operation_ids},
-            )
-            db.execute(
-                text("DELETE FROM operation_status_history WHERE farm_id = :farm_id AND operation_id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": operation_ids},
-            )
-            db.execute(
-                text("DELETE FROM operation_route_history WHERE farm_id = :farm_id AND operation_id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": operation_ids},
-            )
-            db.execute(
-                text("DELETE FROM operations WHERE farm_id = :farm_id AND id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": operation_ids},
-            )
-        if route_ids:
-            db.execute(
-                text("DELETE FROM route_plans WHERE farm_id = :farm_id AND id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": route_ids},
-            )
-        if team_id is not None:
-            db.execute(
-                text("DELETE FROM machine_assignments WHERE farm_id = :farm_id AND team_id = :team_id"),
-                {"farm_id": farm_id, "team_id": team_id},
-            )
-            db.execute(
-                text("DELETE FROM team_members WHERE farm_id = :farm_id AND team_id = :team_id"),
-                {"farm_id": farm_id, "team_id": team_id},
-            )
-        if machine_ids:
-            db.execute(
-                text("""
-                UPDATE user_farms SET assigned_machine_id = NULL
-                WHERE farm_id = :farm_id AND assigned_machine_id = ANY(:ids)
-                """),
-                {"farm_id": farm_id, "ids": machine_ids},
-            )
-            db.execute(
-                text("DELETE FROM machine_assignments WHERE farm_id = :farm_id AND machine_id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": machine_ids},
-            )
-            db.execute(
-                text("DELETE FROM telemetry_readings WHERE farm_id = :farm_id AND machine_id = ANY(:ids) AND source = 'SIMULATED'"),
-                {"farm_id": farm_id, "ids": machine_ids},
-            )
-            db.execute(
-                text("DELETE FROM machine_locations WHERE farm_id = :farm_id AND machine_id = ANY(:ids) AND source = 'SIMULATED'"),
-                {"farm_id": farm_id, "ids": machine_ids},
-            )
-            db.execute(
-                text("DELETE FROM machines WHERE farm_id = :farm_id AND id = ANY(:ids)"),
-                {"farm_id": farm_id, "ids": machine_ids},
-            )
-        if team_id is not None:
-            db.execute(
-                text("DELETE FROM teams WHERE farm_id = :farm_id AND id = :team_id"),
-                {"farm_id": farm_id, "team_id": team_id},
-            )
-        if structure_id is not None:
-            db.execute(
-                text("DELETE FROM structures WHERE farm_id = :farm_id AND id = :structure_id"),
-                {"farm_id": farm_id, "structure_id": structure_id},
-            )
-    return {
-        "farm_id": farm_id,
-        "removed_machine_ids": machine_ids,
-        "removed_operation_ids": operation_ids,
-        "removed_route_plan_ids": route_ids,
-        "removed_team_id": team_id,
-        "removed_base_structure_id": structure_id,
-        "preserved": ["users", "roles", "permissions", "farm", "existing fields and roads", "audit logs"],
-    }
+def cleanup(farm_id: int):
+    del farm_id
+    raise ScenarioError(
+        "A limpeza automática está desabilitada: o runner não mantém um manifesto "
+        "de propriedade que permita provar quais registros pertencem somente a esta execução. "
+        "Os dados de teste devem ser preservados."
+    )
 
 
 class MqttCapture:
@@ -921,8 +811,188 @@ def _duplicate_mqtt_test(capture: MqttCapture, api: Api, machine_id: int, farm_i
     }
 
 
-def run_e2e(api_base_url: str, farm_id: int, work_dir: Path):
-    prepared = prepare(api_base_url, farm_id)
+def _assert_prepared_operation(operation: dict, farm_id: int, operation_id: int) -> None:
+    if (
+        operation.get("id") != operation_id
+        or operation.get("farm_id") != farm_id
+        or not _is_scenario_operation(operation)
+        or operation.get("status") != "ATRIBUIDA"
+        or operation.get("machine_id") is None
+        or operation.get("operator_id") is None
+        or operation.get("team_id") is None
+        or operation.get("field_id") is None
+        or operation.get("route_plan_id") is not None
+        or operation.get("started_at") is not None
+    ):
+        raise ScenarioError(
+            "A operação informada não é uma operação E2E atribuída e ainda não iniciada."
+        )
+
+
+def validate_prepared(api_base_url: str, farm_id: int, operation_id: int) -> dict:
+    _require_isolated_farm(farm_id)
+    admin_token, admin = _issue_local_token("admin", farm_id)
+    if admin["role"] != "OWNER":
+        raise ScenarioError("A validação requer OWNER na fazenda E2E isolada.")
+    api = Api(api_base_url, farm_id, admin_token)
+    operation = api.data("GET", f"/operations/{operation_id}")
+    _assert_prepared_operation(operation, farm_id, operation_id)
+
+    operations = api.collection("/operations")
+    if len(operations) != 1 or operations[0].get("id") != operation_id:
+        raise ScenarioError("A fazenda deve conter somente a operação preparada deste cenário.")
+
+    machines = api.collection("/machines")
+    machine_by_code = {machine.get("code"): machine for machine in machines}
+    machine_a = machine_by_code.get(_scenario_machine_code(farm_id, "A"))
+    machine_b = machine_by_code.get(_scenario_machine_code(farm_id, "B"))
+    if (
+        machine_a is None
+        or machine_b is None
+        or machine_a.get("id") != operation["machine_id"]
+        or machine_a.get("base_structure_id") is None
+    ):
+        raise ScenarioError("As máquinas E2E não correspondem à operação preparada.")
+
+    users = api.collection("/users")
+    operator = next(
+        (
+            user for user in users
+            if user.get("id") == operation["operator_id"]
+            and user.get("role") == "OPERATOR"
+            and user.get("status") == "active"
+            and user.get("assigned_machine_id") == machine_a["id"]
+        ),
+        None,
+    )
+    if operator is None:
+        raise ScenarioError("O operador ativo não está associado à máquina da operação.")
+
+    teams = api.collection("/teams")
+    team = next(
+        (
+            item for item in teams
+            if item.get("id") == operation["team_id"]
+            and item.get("code") == SCENARIO_TEAM_CODE
+        ),
+        None,
+    )
+    if team is None:
+        raise ScenarioError("A equipe da operação não pertence ao cenário E2E.")
+    members = api.collection(f"/teams/{team['id']}/members")
+    if not any(
+        member.get("user_id") == operator["id"]
+        and member.get("team_role") == "OPERATOR"
+        for member in members
+    ):
+        raise ScenarioError("O operador não é membro ativo da equipe E2E.")
+
+    fields = api.collection("/fields")
+    roads = api.collection("/roads")
+    structures = api.collection("/structures")
+    field = next((item for item in fields if item.get("id") == operation["field_id"]), None)
+    structure = next(
+        (
+            item for item in structures
+            if item.get("id") == machine_a["base_structure_id"]
+            and item.get("nome") == SCENARIO_BASE_NAME
+        ),
+        None,
+    )
+    if field is None or structure is None or not roads:
+        raise ScenarioError("Faltam recursos espaciais E2E associados à fazenda.")
+    candidate = _select_base_and_field(
+        roads,
+        [field],
+        get_settings().route_snap_max_distance_m,
+    )
+    if candidate["field"]["id"] != field["id"]:
+        raise ScenarioError("A estrada E2E não está dentro da tolerância do talhão.")
+
+    machine_ids = [machine_a["id"], machine_b["id"]]
+    database_state = _db_rows(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM machines
+             WHERE farm_id = :farm_id AND id = ANY(:machine_ids)) AS machines,
+            (SELECT COUNT(*) FROM fields
+             WHERE farm_id = :farm_id AND id = :field_id) AS fields,
+            (SELECT COUNT(*) FROM roads
+             WHERE farm_id = :farm_id AND id = :road_id) AS roads,
+            (SELECT COUNT(*) FROM structures
+             WHERE farm_id = :farm_id AND id = :structure_id) AS structures,
+            (SELECT COUNT(*) FROM operations
+             WHERE farm_id = :farm_id AND id = :operation_id
+               AND machine_id = :machine_id AND field_id = :field_id) AS operations,
+            (SELECT COUNT(*) FROM telemetry_readings
+             WHERE farm_id = :farm_id AND machine_id = ANY(:machine_ids)) AS readings,
+            (SELECT COUNT(*) FROM machine_locations
+             WHERE farm_id = :farm_id AND machine_id = ANY(:machine_ids)) AS locations,
+            (SELECT COUNT(*) FROM network_nodes WHERE farm_id = :farm_id) AS network_nodes,
+            (SELECT COUNT(*) FROM network_segments WHERE farm_id = :farm_id) AS network_segments
+        """,
+        {
+            "farm_id": farm_id,
+            "machine_ids": machine_ids,
+            "field_id": field["id"],
+            "road_id": candidate["road"]["id"],
+            "structure_id": structure["id"],
+            "operation_id": operation_id,
+            "machine_id": machine_a["id"],
+        },
+    )[0]
+    if (
+        database_state["machines"] != 2
+        or database_state["fields"] != 1
+        or database_state["roads"] != 1
+        or database_state["structures"] != 1
+        or database_state["operations"] != 1
+        or database_state["readings"] != 0
+        or database_state["locations"] != 0
+        or database_state["network_nodes"] == 0
+        or database_state["network_segments"] == 0
+    ):
+        raise ScenarioError(
+            "A conferência PostgreSQL encontrou recursos ausentes ou telemetria prévia nas máquinas E2E."
+        )
+
+    run_number = _scenario_run_number(operation)
+    return {
+        "run_id": f"operation-{operation_id}",
+        "run_number": run_number,
+        "farm_id": farm_id,
+        "operator_id": operator["id"],
+        "team_id": team["id"],
+        "base_structure_id": structure["id"],
+        "machine_a_id": machine_a["id"],
+        "machine_b_id": machine_b["id"],
+        "field_id": field["id"],
+        "operation_id": operation_id,
+        "operation_status": operation["status"],
+        "road_id": candidate["road"]["id"],
+        "base_coordinates_from_road": candidate["base"],
+        "field_snap_distance_m": round(candidate["snap_distance_m"], 2),
+        "estimated_route_distance_m": round(candidate["route_distance_m"], 2),
+        "estimated_route_locations": candidate["route_point_count"],
+        "network": {
+            "nodes_created": database_state["network_nodes"],
+            "segments_created": database_state["network_segments"],
+        },
+        "telemetry_generated": False,
+    }
+
+
+def run_e2e(
+    api_base_url: str,
+    farm_id: int,
+    work_dir: Path,
+    prepared_operation_id: int | None = None,
+):
+    prepared = (
+        validate_prepared(api_base_url, farm_id, prepared_operation_id)
+        if prepared_operation_id is not None
+        else prepare(api_base_url, farm_id)
+    )
     admin_token, _ = _issue_local_token("admin", farm_id)
     operator_token, operator = _issue_local_token(
         next(
@@ -1183,12 +1253,18 @@ def run_e2e(api_base_url: str, farm_id: int, work_dir: Path):
                             AND machine_id=ANY(:machine_ids) AND source='SIMULATED') AS telemetry_readings,
                         (SELECT COUNT(*) FROM telemetry_readings WHERE farm_id=:farm_id
                             AND machine_id=ANY(:machine_ids) AND source='SIMULATED'
-                            AND recorded_at >= :started_at) AS recent_telemetry
+                            AND recorded_at >= :started_at) AS recent_telemetry,
+                        (SELECT COUNT(*) FROM telemetry_readings WHERE farm_id=:farm_id
+                            AND machine_id=:machine_id AND operation_id=:operation_id) AS operation_readings,
+                        (SELECT COUNT(*) FROM machine_locations WHERE farm_id=:farm_id
+                            AND machine_id=:machine_id AND operation_id=:operation_id) AS operation_locations
                 """),
                 {
                     "route_id": route["route_plan_id"],
                     "farm_id": farm_id,
                     "machine_ids": [machine_a, machine_b],
+                    "machine_id": machine_a,
+                    "operation_id": operation_id,
                     "started_at": initial_a["recorded_at"],
                 },
             ).mappings().one()
@@ -1225,8 +1301,80 @@ def run_e2e(api_base_url: str, farm_id: int, work_dir: Path):
             message for message in mqtt_messages
             if message["payload"] and message["payload"].get("source") == "SIMULATED"
         ]
+        operation_messages = [
+            message for message in relevant_messages
+            if message["payload"].get("operation_id") == operation_id
+        ]
+        operation_message_topics = {
+            message["topic"].rsplit("/", 1)[-1] for message in operation_messages
+        }
+        if (
+            database_results["operation_readings"] < 1
+            or database_results["operation_locations"] < 1
+            or not {"localizacao", "temperatura"}.issubset(operation_message_topics)
+        ):
+            raise ScenarioError(
+                "A telemetria MQTT não persistiu operation_id em medições e posições."
+            )
+
+        report_telemetry = admin_api.collection(
+            f"/operations/{operation_id}/telemetry"
+        )
+        database_readings = _db_rows(
+            """
+            SELECT reading.id
+            FROM telemetry_readings AS reading
+            WHERE reading.farm_id=:farm_id AND reading.machine_id=:machine_id
+              AND reading.operation_id=:operation_id
+            ORDER BY reading.recorded_at, reading.id
+            """,
+            {"farm_id": farm_id, "machine_id": machine_a, "operation_id": operation_id},
+        )
+        database_reading_ids = [row["id"] for row in database_readings]
+        api_reading_ids = [
+            row["id"] for row in report_telemetry
+            if row.get("association_source") == "EXPLICIT"
+        ]
+        if sorted(api_reading_ids) != sorted(database_reading_ids):
+            raise ScenarioError(
+                "Os IDs de telemetria EXPLICIT do relatório divergem do PostgreSQL."
+            )
+
+        report_locations = admin_api.data(
+            "GET", f"/operations/{operation_id}/locations"
+        )
+        database_locations = _db_rows(
+            """
+            SELECT location.id
+            FROM machine_locations AS location
+            WHERE location.farm_id=:farm_id AND location.machine_id=:machine_id
+              AND location.operation_id=:operation_id
+            ORDER BY location.recorded_at, location.id
+            """,
+            {"farm_id": farm_id, "machine_id": machine_a, "operation_id": operation_id},
+        )
+        database_location_ids = [row["id"] for row in database_locations]
+        api_location_ids = [
+            row["id"] for row in report_locations.get("locations", [])
+            if row.get("association_source") == "EXPLICIT"
+        ]
+        if sorted(api_location_ids) != sorted(database_location_ids):
+            raise ScenarioError(
+                "Os IDs de posições EXPLICIT do relatório divergem do PostgreSQL."
+            )
+        result["report_validation"] = {
+            "telemetry_api_row_count": len(report_telemetry),
+            "telemetry_explicit_ids": sorted(api_reading_ids),
+            "location_api_row_count": len(report_locations.get("locations", [])),
+            "location_explicit_ids": sorted(api_location_ids),
+            "association_sources": sorted({
+                row.get("association_source", "UNLINKED")
+                for row in report_telemetry
+            }),
+        }
         result["mqtt"] = {
             "captured_messages": len(relevant_messages),
+            "messages_with_operation_id": len(operation_messages),
             "machine_a_topics": {},
             "machine_b_topics": {},
         }
@@ -1252,30 +1400,33 @@ def run_e2e(api_base_url: str, farm_id: int, work_dir: Path):
 
 
 def _resolve_farm_id(requested_id: int | None) -> int:
-    settings = _require_development_environment()
+    _require_development_environment()
+    if requested_id is None:
+        raise ScenarioError(
+            "Informe --farm-id de uma fazenda E2E exclusiva; a fazenda padrão nunca é usada."
+        )
     with SessionLocal() as db:
-        if requested_id is not None:
-            farm = db.get(Farm, requested_id)
-            if farm is None or farm.code != settings.initial_farm_code or farm.status != "active":
-                raise ScenarioError("Use somente a fazenda de desenvolvimento ativa configurada no backend.")
-            return farm.id
-        farm = db.query(Farm).filter(
-            Farm.code == settings.initial_farm_code,
-            Farm.status == "active",
-        ).one_or_none()
-        if farm is None:
-            raise ScenarioError("A fazenda de desenvolvimento configurada não existe ou está inativa.")
+        farm = db.get(Farm, requested_id)
+        if (
+            farm is None
+            or farm.status != "active"
+            or not str(farm.code or "").startswith(ISOLATED_FARM_CODE_PREFIX)
+        ):
+            raise ScenarioError(
+                "Use somente uma fazenda ativa exclusiva com código iniciado por "
+                f"{ISOLATED_FARM_CODE_PREFIX!r}."
+            )
         return farm.id
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepara ou remove com segurança o cenário E2E descartável do TeleDis."
+        description="Executa o cenário E2E somente em fazenda exclusiva do TeleDis."
     )
-    parser.add_argument("action", choices=("prepare", "run", "cleanup"))
-    parser.add_argument("--farm-id", type=int)
+    parser.add_argument("action", choices=("prepare", "validate", "run", "cleanup"))
+    parser.add_argument("--farm-id", type=int, required=True)
+    parser.add_argument("--operation-id", type=int)
     parser.add_argument("--api-url", default="http://localhost:8000")
-    parser.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
     try:
         parsed_url = urlparse(args.api_url)
@@ -1284,12 +1435,25 @@ def main():
         _configure_local_database()
         farm_id = _resolve_farm_id(args.farm_id)
         if args.action == "prepare":
+            if args.operation_id is not None:
+                raise ScenarioError("--operation-id só pode ser usado com validate ou run.")
             result = prepare(args.api_url, farm_id)
+        elif args.action == "validate":
+            if args.operation_id is None:
+                raise ScenarioError("Informe --operation-id para validar uma operação preparada.")
+            result = validate_prepared(args.api_url, farm_id, args.operation_id)
         elif args.action == "run":
             with tempfile.TemporaryDirectory(prefix="teledis-e2e-") as directory:
-                result = run_e2e(args.api_url, farm_id, Path(directory))
+                result = run_e2e(
+                    args.api_url,
+                    farm_id,
+                    Path(directory),
+                    prepared_operation_id=args.operation_id,
+                )
         else:
-            result = cleanup(farm_id, args.confirm)
+            if args.operation_id is not None:
+                raise ScenarioError("--operation-id não pode ser usado com cleanup.")
+            result = cleanup(farm_id)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     except ScenarioError as exc:
         parser.error(str(exc))

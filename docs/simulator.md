@@ -167,70 +167,61 @@ operação e permite relatório/replay objetivos.
 
 Os testes cobrem configuração e multiplicador, estado inicial do engine,
 proveniência da mensagem, validação espacial da localização simulada e rejeição
-de máquina não cadastrada. O runner `scripts/teledis_e2e.py` também executa um
-cenário descartável contra os serviços locais reais, sem mocks:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\teledis_e2e.py prepare
-.\.venv\Scripts\python.exe scripts\teledis_e2e.py run
-```
+de máquina não cadastrada. O runner `scripts/teledis_e2e.py` só pode ser
+executado contra uma fazenda de teste exclusiva:
 
 O ambiente precisa estar em `API_ENV=development`, com API, MQTT e PostgreSQL
-PostGIS locais saudáveis e migrations 012–014 aplicadas. `prepare` reutiliza a
-fazenda, estrada, talhão e usuário já existentes; cria ou reutiliza somente os
-recursos marcados `E2E-TELEDIS-*`, calcula a rota pelos endpoints oficiais e
-não grava telemetria diretamente. `run` prepara o cenário quando necessário,
-executa os processos reais do simulador e retorna um JSON com o resultado de
-cada etapa, contagens MQTT/banco e verificações negativas.
-
-Após uma execução concluída, a operação fica em estado terminal e o cenário é
-preservado para inspeção na interface. Uma nova chamada a `prepare` ou `run`
-cria uma nova operação normal do TeleDis (`E2E TeleDis - Colheita #2`, `#3`,
-etc.), com novo plano de rota e históricos próprios. Fazenda, máquinas,
-estrutura-base, equipe, operador, talhão e rede viária são reutilizados. Uma
-preparação ainda não terminada é reutilizada, o que torna `prepare` seguido de
-`run` idempotente e evita operações órfãs.
-
-Cada preparação informa `run_id`, `run_number`, `operation_id` e, depois do
-cálculo, o `route_plan_id`. O identificador lógico é derivado do ID real da
-operação, sem tabela paralela. GPS e telemetria não possuem `operation_id` no
-schema atual; relatórios e replay correlacionam esses registros pela máquina e
-pela janela persistida entre `started_at` e `completed_at`.
-
-Não é necessário executar cleanup entre demonstrações. Para remover
-manualmente todo o conjunto E2E somente quando ele realmente não for mais
-necessário, use:
+PostGIS locais saudáveis e a migration 015 aplicada. A fazenda deve estar ativa,
+ter um código iniciado por `E2E-ISOLATED-`, incluir o usuário `admin` como
+`OWNER`, um operador sem máquina atribuída, uma área operacional que cubra os
+recursos, uma estrada e um talhão de teste, e não conter operações. O runner
+recusa a fazenda de desenvolvimento padrão, não reutiliza recursos/execuções
+E2E anteriores e não modifica registros de outra fazenda. `prepare` cria a
+estrutura-base, duas máquinas com códigos exclusivos por fazenda, equipe e
+operação atribuída; não aceita nem inicia a operação e não publica MQTT. `validate`
+confere os recursos e confirma no PostgreSQL que ainda não há telemetria para as
+máquinas do cenário. `run --operation-id` executa a operação previamente
+preparada; sem `--operation-id`, `run` mantém o fluxo que prepara e executa
+imediatamente.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\teledis_e2e.py cleanup --confirm
+.\.venv\Scripts\python.exe scripts\teledis_e2e.py prepare --farm-id <ID_DA_FAZENDA_E2E>
+.\.venv\Scripts\python.exe scripts\teledis_e2e.py validate --farm-id <ID_DA_FAZENDA_E2E> --operation-id <ID_DA_OPERACAO>
+.\.venv\Scripts\python.exe scripts\teledis_e2e.py run --farm-id <ID_DA_FAZENDA_E2E> --operation-id <ID_DA_OPERACAO>
 ```
 
-A limpeza exige confirmação explícita, nunca é chamada por `prepare` ou `run`,
-e remove todas as execuções numeradas do cenário junto dos recursos E2E;
-fazenda, usuários, RBAC, estradas, talhões e logs de auditoria são preservados.
+O comando `validate` é somente de leitura. `prepare` exige que a fazenda ainda
+não contenha máquinas ou recursos reservados pelo cenário e deixa a operação em
+`ATRIBUIDA`, para que uma execução posterior possa validá-la explicitamente.
+O runner calcula a rota e publica telemetria pelo simulador/MQTT somente durante
+`run`, sem inserir telemetria diretamente.
+
+O simulador inclui `operation_id` nos eventos enquanto o contexto da API
+identifica uma operação ativa. A API e o relatório distinguem `EXPLICIT` de
+`TEMPORAL_FALLBACK`; a exportação CSV preserva `operation_id` e
+`association_source`. O runner compara os IDs explícitos reportados pela API
+com os registros PostgreSQL e exige mensagens MQTT de GPS/temperatura com o
+`operation_id` da operação. O fallback temporal não altera nem representa um
+vínculo persistido.
+
+O runner não provisiona sozinho a fazenda, o talhão, a estrada ou o operador.
+Cada preparação requer uma fazenda E2E nova, sem operações, máquinas, estrutura
+ou equipe reservadas anteriormente pelo cenário. A limpeza automática está
+desabilitada: sem manifesto de propriedade por execução, não é possível provar
+que registros identificados por nomes/códigos compartilhados pertencem
+exclusivamente ao runner. Preserve os dados E2E para inspeção.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\teledis_e2e.py cleanup --farm-id <ID_DA_FAZENDA_E2E>
+```
+
+O comando acima sempre recusa a exclusão, sem alterar o banco. Uma execução
+anterior documentada não é evidência da execução atual; os resultados devem ser
+registrados a cada validação.
 
 ## Demo rápida do TeleDis
 
-1. Inicie os serviços e confirme que backend, PostgreSQL e MQTT estão saudáveis.
-2. Execute `python scripts/teledis_e2e.py run`; anote `operation_id` e
-   `route_plan_id` do JSON final.
-3. Abra o Dashboard e o mapa para acompanhar a operação identificada como
-   `SIMULATED`.
-4. O runner interrompe e retoma a operação durante a validação e termina com a
-   máquina na base.
-5. Abra `/operacoes/{operation_id}` e o relatório correspondente.
-6. Execute o mesmo comando novamente. Uma nova operação será criada e todas as
-   anteriores continuarão consultáveis; nenhuma limpeza é necessária.
-
-Na execução de referência em desenvolvimento, a máquina A percorreu a rota
-persistida de 1.051,71 m até o talhão e retornou à base. Foram capturados 232
-eventos MQTT; persistiram 38 localizações e 191 leituras simuladas nas duas
-máquinas. A rota manteve desvio máximo medido de 0,066 m. A pausa impediu
-movimento, a segunda instância da máquina A foi bloqueada, a parada da máquina
-B cessou novas localizações, a reentrega QoS 1 manteve uma única medição, uma
-localização fora da área recebeu HTTP 422 e o pedido com fazenda alheia recebeu
-HTTP 403. O estado final da operação foi `CONCLUIDA` e o simulador terminou em
-`AT_BASE`.
-
-O contrato broker → backend também é coberto pelos testes de ingestão
-existentes. A configuração de usuário/ACL por máquina continua pendente.
+Depois de provisionar a fazenda isolada e completar a execução, abra a operação
+e seu relatório com autenticação real. Ainda é necessário validar a comparação
+entre PostgreSQL, API, interface e download CSV em um navegador autenticado; os
+testes unitários da exportação não substituem essa validação ponta a ponta.

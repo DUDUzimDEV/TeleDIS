@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import Layout from './components/layout/Layout';
+import AppErrorBoundary from './components/ui/AppErrorBoundary';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import FarmSelectionPage from './pages/FarmSelectionPage';
@@ -89,8 +90,9 @@ export default function App() {
     : '/login';
 
   return (
-    <Suspense fallback={<div className="auth-loading-panel">Carregando painel operacional...</div>}>
-      <Routes>
+    <AppErrorBoundary>
+      <Suspense fallback={<div className="auth-loading-panel">Carregando painel operacional...</div>}>
+        <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={isAuthenticated ? <Navigate to={home} replace /> : <LoginPage />} />
         <Route path="/selecionar-fazenda" element={<ProtectedRoute allowFarmSelection><FarmSelectionPage /></ProtectedRoute>} />
@@ -118,8 +120,9 @@ export default function App() {
         <Route path="/operacao" element={<OperatorRoute><OperatorPage /></OperatorRoute>} />
         <Route path="/minha-maquina" element={<OperatorRoute><OperatorPage /></OperatorRoute>} />
         <Route path="/minha-rota" element={<OperatorRoute><OperatorPage initialTab="route" /></OperatorRoute>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </AppErrorBoundary>
   );
 }

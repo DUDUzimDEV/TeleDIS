@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, LogOut, MapPinned, Navigation, Sprout, Tractor } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, LogOut, MapPinned, Navigation, Sprout, Tractor, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { apiFetch } from '../api/apiClient';
@@ -10,18 +10,56 @@ import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { formatDateTime, geoLineToLeaflet } from '../utils/geoData';
 
+const ROAD_PROBLEM_TYPES = [
+  { value: 'BURACO', label: 'Buraco' },
+  { value: 'LAMA', label: 'Lama' },
+  { value: 'ALAGAMENTO', label: 'Alagamento' },
+  { value: 'VIA_BLOQUEADA', label: 'Via bloqueada' },
+  { value: 'PONTE_PROBLEMA', label: 'Problema em ponte' },
+  { value: 'DESLIZAMENTO', label: 'Deslizamento' },
+  { value: 'OUTRO', label: 'Outro' },
+];
+
+const ROAD_PROBLEM_SEVERITIES = [
+  { value: 'BAIXA', label: 'Baixa' },
+  { value: 'MEDIA', label: 'Média' },
+  { value: 'ALTA', label: 'Alta' },
+  { value: 'CRITICA', label: 'Crítica' },
+];
+
+const INITIAL_ROAD_PROBLEM_DRAFT = {
+  road_id: '',
+  tipo: 'BURACO',
+  gravidade: 'MEDIA',
+  descricao: '',
+};
+
 export default function OperatorPage() {
   const { activeFarm, can, signOut, user } = useAuth();
   const [refresh, setRefresh] = useState(0);
   const [locationRefresh, setLocationRefresh] = useState(0);
   const [actionError, setActionError] = useState('');
+  const [confirmAction, setConfirmAction] = useState(null);
   const [occurrence, setOccurrence] = useState({ occurrence_type: 'PROBLEMA_VIA', description: '' });
   const [sending, setSending] = useState(false);
+  const [roadProblemModalOpen, setRoadProblemModalOpen] = useState(false);
+  const [roadProblemDraft, setRoadProblemDraft] = useState(INITIAL_ROAD_PROBLEM_DRAFT);
+  const [roadProblemSubmitting, setRoadProblemSubmitting] = useState(false);
+  const [roadProblemError, setRoadProblemError] = useState('');
+  const [roadProblemSuccess, setRoadProblemSuccess] = useState('');
   const machineId = user?.assigned_machine_id;
   const machinesResource = useApiResource('/api/v1/machines');
   const locationResource = useApiResource(`/api/v1/locations/${machineId}?limit=20`, locationRefresh, { enabled: Boolean(machineId) });
-  const telemetryResource = useApiResource(`/api/v1/telemetry/${machineId}`, 0, { enabled: Boolean(machineId) });
-  const operationsResource = useApiResource('/api/v1/operations', refresh);
+  const telemetryResource = useApiResource(`/api/v1/telemetry/${machineId}`, 0, {
+    enabled: Boolean(machineId),
+    pollingIntervalMs: 10000,
+  });
+  const operationsResource = useApiResource('/api/v1/operations', refresh, {
+    pollingIntervalMs: 10000,
+  });
+  const roadsResource = useApiResource('/api/v1/roads', 0, {
+    enabled: can('road_problems.create'),
+  });
   const operations = Array.isArray(operationsResource.data) ? operationsResource.data : [];
   const currentOperation = operations.find((item) => ['ATRIBUIDA', 'ACEITA', 'EM_EXECUCAO', 'INTERROMPIDA'].includes(item.status))
     || operations.find((item) => item.status === 'PLANEJADA')
@@ -47,6 +85,14 @@ export default function OperatorPage() {
     return () => window.clearInterval(timer);
   }, [machineId]);
 
+  useEffect(() => {
+    if (!confirmAction) return undefined;
+    const timer = window.setTimeout(() => setConfirmAction(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [confirmAction]);
+
+  const roads = Array.isArray(roadsResource.data) ? roadsResource.data : [];
+
   const assignedMachine = useMemo(() => (
     (Array.isArray(machinesResource.data) ? machinesResource.data : [])
       .find((machine) => Number(machine.id) === Number(machineId)) || null
@@ -68,6 +114,18 @@ export default function OperatorPage() {
     return [...byMetric.values()];
   }, [readings]);
   const speedReading = latestReadings.find((item) => /velocidade|speed/i.test(item.metric));
+  const rpmReading = latestReadings.find((item) => /rpm|rotac/i.test(item.metric));
+  const tempReading = latestReadings.find((item) => /temp/i.test(item.metric));
+  const fuelReading = latestReadings.find((item) => /combust|fuel/i.test(item.metric));
+  const operationStepIndex = !currentOperation
+    ? -1
+    : currentOperation.status === 'CONCLUIDA'
+      ? 2
+      : ['EM_EXECUCAO', 'INTERROMPIDA'].includes(currentOperation.status)
+        ? 1
+        : ['ACEITA', 'ATRIBUIDA'].includes(currentOperation.status)
+          ? 0
+          : -1;
 
   async function logout() {
     await signOut();
@@ -75,6 +133,7 @@ export default function OperatorPage() {
 
   async function operationAction(action, body = {}) {
     if (!currentOperation) return;
+    setConfirmAction(null);
     setSending(true);
     setActionError('');
     try {
@@ -90,6 +149,62 @@ export default function OperatorPage() {
       setActionError(error.message || 'Não foi possível atualizar a operação.');
     } finally {
       setSending(false);
+    }
+  }
+
+  function handleConfirmedAction(action, body = {}) {
+    if (confirmAction !== action) {
+      setConfirmAction(action);
+      return;
+    }
+    operationAction(action, body);
+  }
+
+  function openRoadProblemModal() {
+    setRoadProblemError('');
+    setRoadProblemSuccess('');
+    setRoadProblemModalOpen(true);
+  }
+
+  function closeRoadProblemModal() {
+    if (roadProblemSubmitting) return;
+    setRoadProblemModalOpen(false);
+    setRoadProblemError('');
+  }
+
+  async function submitRoadProblem(event) {
+    event.preventDefault();
+    if (!currentLocation) {
+      setRoadProblemError('Posição GPS da máquina indisponível no momento.');
+      return;
+    }
+    setRoadProblemSubmitting(true);
+    setRoadProblemError('');
+    try {
+      const response = await apiFetch('/api/v1/road-problems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          road_id: Number(roadProblemDraft.road_id),
+          tipo: roadProblemDraft.tipo,
+          gravidade: roadProblemDraft.gravidade,
+          descricao: roadProblemDraft.descricao.trim() || null,
+          geometry: {
+            type: 'Point',
+            coordinates: [Number(currentLocation.longitude), Number(currentLocation.latitude)],
+          },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+      setRoadProblemModalOpen(false);
+      setRoadProblemDraft(INITIAL_ROAD_PROBLEM_DRAFT);
+      setRoadProblemSuccess('Problema na via registrado com sucesso.');
+      setRefresh((value) => value + 1);
+    } catch (error) {
+      setRoadProblemError(error.message || 'Não foi possível registrar o problema na via.');
+    } finally {
+      setRoadProblemSubmitting(false);
     }
   }
 
@@ -131,8 +246,20 @@ export default function OperatorPage() {
 
       <section className="operator-machine-heading">
         <span className="operator-machine-icon"><Tractor size={24} /></span>
-        <div><small>Minha máquina</small><h1>{assignedMachine?.nome || 'Máquina não atribuída'}</h1></div>
-        {assignedMachine ? <StatusBadge>{assignedMachine.status}</StatusBadge> : null}
+        <div>
+          <small>Modo cabine · Minha máquina</small>
+          <h1>{assignedMachine?.nome || 'Máquina não atribuída'}</h1>
+        </div>
+        {assignedMachine ? (
+          <div className="operator-live-badges">
+            <StatusBadge tone={assignedMachine.status === 'active' || assignedMachine.status === 'ATIVA' ? 'success' : 'neutral'}>
+              {assignedMachine.status}
+            </StatusBadge>
+            <StatusBadge tone={currentLocation ? 'success' : 'neutral'}>
+              {currentLocation ? 'Ao vivo' : 'Sem GPS'}
+            </StatusBadge>
+          </div>
+        ) : null}
       </section>
 
       {machinesResource.error ? <ErrorState message={machinesResource.error} onRetry={machinesResource.reload} /> : null}
@@ -174,9 +301,10 @@ export default function OperatorPage() {
           </section>
 
           <section className="operator-status-strip">
-            <article><small>Status da máquina</small><strong><StatusBadge>{assignedMachine.status}</StatusBadge></strong></article>
-            <article><small>Velocidade</small><strong>{speedReading ? `${speedReading.valor} ${speedReading.unidade || ''}` : 'Sem leitura disponível'}</strong></article>
-            <article><small>Última posição</small><strong>{currentLocation ? formatDateTime(currentLocation.timestamp) : 'Sem posição'}</strong></article>
+            <article><small>Velocidade</small><strong className="mono">{speedReading ? `${speedReading.valor} ${speedReading.unidade || 'km/h'}` : '—'}</strong></article>
+            <article><small>RPM</small><strong className="mono">{rpmReading ? `${rpmReading.valor} ${rpmReading.unidade || 'rpm'}` : '—'}</strong></article>
+            <article><small>Temperatura</small><strong className="mono">{tempReading ? `${tempReading.valor} ${tempReading.unidade || '°C'}` : '—'}</strong></article>
+            <article><small>Combustível</small><strong className="mono">{fuelReading ? `${fuelReading.valor} ${fuelReading.unidade || '%'}` : '—'}</strong></article>
           </section>
 
           <section className="operator-readings-panel">
@@ -205,17 +333,55 @@ export default function OperatorPage() {
               {!operationsResource.loading && !operationsResource.error && !currentOperation ? <><h2>Nenhuma operação atribuída</h2><p>A coordenação ainda não atribuiu uma atividade a você.</p></> : null}
               {currentOperation ? (
                 <>
-                  <h2>{currentOperation.name}</h2>
-                  <p>{currentOperation.operation_type} · Talhão: {currentOperation.field_name} · {currentOperation.status.replaceAll('_', ' ')}</p>
-                  {latestRoute ? <p>Trajeto recomendado: {Number(latestRoute.distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m · versão {latestRoute.version}</p> : <p>A rota ainda não foi calculada pela coordenação.</p>}
+                  <div className="operator-task-head">
+                    <h2>{currentOperation.name}</h2>
+                    <StatusBadge tone={currentOperation.status === 'EM_EXECUCAO' ? 'success' : currentOperation.status === 'INTERROMPIDA' ? 'warning' : 'neutral'}>
+                      {currentOperation.status.replaceAll('_', ' ')}
+                    </StatusBadge>
+                  </div>
+                  <p>{currentOperation.operation_type} · Talhão: {currentOperation.field_name}</p>
+                  <div className="operator-lifecycle-steps" aria-label="Etapas da operação">
+                    {['Aceita', 'Em Execução', 'Concluída'].map((stepLabel, index) => {
+                      const stateClass = index < operationStepIndex
+                        ? 'done'
+                        : index === operationStepIndex
+                          ? 'current'
+                          : 'upcoming';
+                      return (
+                        <div key={stepLabel} className={`operator-step-pill ${stateClass}`}>
+                          <span className="operator-step-dot" />
+                          <span>{stepLabel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {latestRoute ? <p className="mono">Trajeto recomendado: {Number(latestRoute.distance_m).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m · versão {latestRoute.version}</p> : <p>A rota ainda não foi calculada pela coordenação.</p>}
                   {historyResource.error ? <ErrorState message={historyResource.error} onRetry={historyResource.reload} /> : null}
                   <div className="operator-operation-actions">
-                    {currentOperation.status === 'ATRIBUIDA' ? <button type="button" disabled={sending} onClick={() => operationAction('accept')}>Aceitar operação</button> : null}
-                    {currentOperation.status === 'ACEITA' ? <button type="button" disabled={sending} onClick={() => operationAction('start')}>Iniciar operação</button> : null}
+                    {currentOperation.status === 'ATRIBUIDA' ? <button type="button" className="operator-primary-action" disabled={sending} onClick={() => operationAction('accept')}>Aceitar operação</button> : null}
+                    {currentOperation.status === 'ACEITA' ? <button type="button" className="operator-primary-action" disabled={sending} onClick={() => operationAction('start')}>Iniciar operação</button> : null}
                     {currentOperation.status === 'EM_EXECUCAO' ? <button type="button" disabled={sending} onClick={() => operationAction('interrupt', { reason: 'Parada informada pelo operador.' })}>Informar parada</button> : null}
-                    {currentOperation.status === 'INTERROMPIDA' ? <button type="button" disabled={sending} onClick={() => operationAction('resume')}>Retomar operação</button> : null}
-                    {currentOperation.status === 'EM_EXECUCAO' ? <button type="button" className="complete" disabled={sending} onClick={() => operationAction('complete')}>Finalizar operação</button> : null}
-                    {['ATRIBUIDA', 'ACEITA', 'INTERROMPIDA'].includes(currentOperation.status) ? <button type="button" disabled={sending} onClick={() => operationAction('cancel', { reason: 'Cancelada pelo operador.' })}>Cancelar</button> : null}
+                    {currentOperation.status === 'INTERROMPIDA' ? <button type="button" className="operator-primary-action" disabled={sending} onClick={() => operationAction('resume')}>Retomar operação</button> : null}
+                    {currentOperation.status === 'EM_EXECUCAO' ? (
+                      <button
+                        type="button"
+                        className={confirmAction === 'complete' ? 'complete confirming' : 'complete'}
+                        disabled={sending}
+                        onClick={() => handleConfirmedAction('complete')}
+                      >
+                        {confirmAction === 'complete' ? 'Confirmar finalização?' : 'Finalizar operação'}
+                      </button>
+                    ) : null}
+                    {['ATRIBUIDA', 'ACEITA', 'INTERROMPIDA'].includes(currentOperation.status) ? (
+                      <button
+                        type="button"
+                        className={confirmAction === 'cancel' ? 'danger confirming' : 'danger'}
+                        disabled={sending}
+                        onClick={() => handleConfirmedAction('cancel', { reason: 'Cancelada pelo operador.' })}
+                      >
+                        {confirmAction === 'cancel' ? 'Confirmar cancelamento?' : 'Cancelar'}
+                      </button>
+                    ) : null}
                   </div>
                   <Link className="operator-detail-link" to={`/operacoes/${currentOperation.id}`}>Ver mapa, métricas e histórico completos</Link>
                   {['EM_EXECUCAO', 'INTERROMPIDA'].includes(currentOperation.status) ? (
@@ -230,8 +396,127 @@ export default function OperatorPage() {
             </div>
           </section>
 
+          {roadProblemSuccess ? (
+            <div className="operator-road-problem-success" role="status">
+              <CheckCircle2 size={18} />
+              <span>{roadProblemSuccess}</span>
+            </div>
+          ) : null}
+
           {can('road_problems.create') ? (
-            <Link className="operator-occurrence-button" to="/problemas-vias"><AlertTriangle size={21} /> Informar problema na via</Link>
+            <button type="button" className="operator-occurrence-button" onClick={openRoadProblemModal}>
+              <AlertTriangle size={21} /> Informar problema na via
+            </button>
+          ) : null}
+
+          {roadProblemModalOpen ? (
+            <div className="field-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="operator-road-problem-title">
+              <div className="field-modal operator-road-problem-modal">
+                <div className="field-modal-header">
+                  <div>
+                    <p className="modal-kicker">Modo cabine</p>
+                    <h3 id="operator-road-problem-title">Informar problema na via</h3>
+                  </div>
+                  <button
+                    type="button"
+                    className="close-button"
+                    onClick={closeRoadProblemModal}
+                    aria-label="Fechar modal"
+                    disabled={roadProblemSubmitting}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {roadsResource.error ? <ErrorState message={roadsResource.error} onRetry={roadsResource.reload} /> : null}
+                {roadProblemError ? <ErrorState message={roadProblemError} /> : null}
+
+                {!currentLocation ? (
+                  <p className="operator-road-gps-warning">
+                    Posição GPS da máquina indisponível no momento. Aguarde a próxima leitura de localização para enviar.
+                  </p>
+                ) : (
+                  <p className="operator-road-gps-info">
+                    Localização capturada da máquina: {Number(currentLocation.latitude).toFixed(5)}, {Number(currentLocation.longitude).toFixed(5)}
+                  </p>
+                )}
+
+                <form className="operator-occurrence-form" onSubmit={submitRoadProblem}>
+                  <label>
+                    Estrada
+                    <select
+                      required
+                      value={roadProblemDraft.road_id}
+                      onChange={(event) => setRoadProblemDraft((prev) => ({ ...prev, road_id: event.target.value }))}
+                      disabled={roadsResource.loading || roadProblemSubmitting}
+                    >
+                      <option value="">
+                        {roadsResource.loading ? 'Carregando estradas...' : 'Selecione a estrada'}
+                      </option>
+                      {roads.map((road) => (
+                        <option key={road.id} value={road.id}>
+                          {road.nome || `Estrada ${road.id}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Tipo de problema
+                    <select
+                      value={roadProblemDraft.tipo}
+                      onChange={(event) => setRoadProblemDraft((prev) => ({ ...prev, tipo: event.target.value }))}
+                      disabled={roadProblemSubmitting}
+                    >
+                      {ROAD_PROBLEM_TYPES.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Gravidade
+                    <select
+                      value={roadProblemDraft.gravidade}
+                      onChange={(event) => setRoadProblemDraft((prev) => ({ ...prev, gravidade: event.target.value }))}
+                      disabled={roadProblemSubmitting}
+                    >
+                      {ROAD_PROBLEM_SEVERITIES.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Descrição
+                    <textarea
+                      maxLength={4000}
+                      placeholder="Descreva o obstáculo, extensão ou risco na via..."
+                      value={roadProblemDraft.descricao}
+                      onChange={(event) => setRoadProblemDraft((prev) => ({ ...prev, descricao: event.target.value }))}
+                      disabled={roadProblemSubmitting}
+                    />
+                  </label>
+
+                  <div className="operator-modal-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={closeRoadProblemModal}
+                      disabled={roadProblemSubmitting}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={roadProblemSubmitting || !currentLocation || !roadProblemDraft.road_id}
+                    >
+                      {roadProblemSubmitting ? 'Enviando...' : 'Registrar problema'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
           ) : null}
           <p className="operator-data-note"><Sprout size={14} />Informações exibidas somente para a máquina vinculada ao seu usuário.</p>
         </>

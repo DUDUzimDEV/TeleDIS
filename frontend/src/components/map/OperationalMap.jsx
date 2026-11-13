@@ -1,5 +1,5 @@
 import React from 'react';
-import { divIcon, latLngBounds } from 'leaflet';
+import { divIcon, DomEvent, latLngBounds } from 'leaflet';
 import { CircleMarker, GeoJSON, MapContainer, Marker, Polygon, Polyline, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 
 import { getCoordinatesCenter } from '../../utils/geoData';
@@ -54,6 +54,20 @@ const structureIcon = divIcon({
   iconAnchor: [10, 10],
 });
 
+const draftVertexIcon = divIcon({
+  className: 'draft-vertex-marker',
+  html: '<span class="draft-vertex-dot" title="Clique para remover este vértice · Arraste para reposicionar"></span>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+const draftRoadVertexIcon = divIcon({
+  className: 'draft-road-vertex-marker',
+  html: '<span class="draft-road-vertex-dot" title="Clique para remover este vértice · Arraste para reposicionar"></span>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
 const roadProblemIcons = {
   BAIXA: divIcon({ className: 'road-problem-marker-icon severity-low', html: '<span>!</span>', iconSize: [24, 24], iconAnchor: [12, 12] }),
   MEDIA: divIcon({ className: 'road-problem-marker-icon severity-medium', html: '<span>!</span>', iconSize: [24, 24], iconAnchor: [12, 12] }),
@@ -85,6 +99,7 @@ function MapClickHandler({
   onRoadMapClick,
   onRoadProblemMapClick,
   onRouteMapClick,
+  onCursorMove,
 }) {
   useMapEvents({
     click(event) {
@@ -100,17 +115,44 @@ function MapClickHandler({
         onRouteMapClick(event.latlng, routePickTarget);
       }
     },
+    mousemove(event) {
+      if (drawingMode || drawingRoad) {
+        onCursorMove?.(event.latlng);
+      }
+    },
+    mouseout() {
+      onCursorMove?.(null);
+    },
   });
 
   return null;
 }
 
-function PersistedEntityBounds({ fields, structures, roads, roadProblems, operationalArea, ready, placingRoadProblem, selectedRoadProblemRoadId }) {
+function PersistedEntityBounds({
+  fields,
+  structures,
+  roads,
+  roadProblems,
+  operationalArea,
+  ready,
+  isDrawingModeActive,
+  farmId,
+  placingRoadProblem,
+  selectedRoadProblemRoadId,
+}) {
   const map = useMap();
+  const fittedFarmRef = React.useRef(null);
 
   React.useEffect(() => {
-    if (!ready || placingRoadProblem) {
-      return;
+    // NEVER fit bounds if drawing or placing mode is active
+    if (!ready || isDrawingModeActive || placingRoadProblem) {
+      return undefined;
+    }
+
+    // Only auto-fit once per farm!
+    const targetFarm = farmId != null ? String(farmId) : (operationalArea?.farm_id != null ? String(operationalArea.farm_id) : 'default');
+    if (fittedFarmRef.current === targetFarm) {
+      return undefined;
     }
 
     const coordinates = [
@@ -123,6 +165,7 @@ function PersistedEntityBounds({ fields, structures, roads, roadProblems, operat
     ];
 
     if (coordinates.length > 0) {
+      fittedFarmRef.current = targetFarm;
       const frame = requestAnimationFrame(() => {
         map.invalidateSize({ pan: false });
         map.fitBounds(latLngBounds(coordinates), { padding: [32, 32], maxZoom: 15 });
@@ -132,7 +175,7 @@ function PersistedEntityBounds({ fields, structures, roads, roadProblems, operat
     }
 
     return undefined;
-  }, [fields, map, operationalArea, placingRoadProblem, ready, roadProblems, roads, structures]);
+  }, [farmId, fields, isDrawingModeActive, map, operationalArea, placingRoadProblem, ready, roadProblems, roads, structures]);
 
   React.useEffect(() => {
     if (!placingRoadProblem || !selectedRoadProblemRoadId) {
@@ -155,11 +198,11 @@ function PersistedEntityBounds({ fields, structures, roads, roadProblems, operat
   return null;
 }
 
-function CalculatedRouteBounds({ routePoints }) {
+function CalculatedRouteBounds({ routePoints, isDrawingModeActive }) {
   const map = useMap();
 
   React.useEffect(() => {
-    if (!routePoints || routePoints.length < 2) {
+    if (isDrawingModeActive || !routePoints || routePoints.length < 2) {
       return undefined;
     }
 
@@ -167,7 +210,7 @@ function CalculatedRouteBounds({ routePoints }) {
       map.fitBounds(latLngBounds(routePoints), { padding: [56, 56], maxZoom: 17 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [map, routePoints]);
+  }, [isDrawingModeActive, map, routePoints]);
 
   return null;
 }
@@ -203,6 +246,11 @@ export default function OperationalMap({
   onRoadMapClick,
   onRoadProblemMapClick,
   onRouteMapClick,
+  onRemoveDraftPoint,
+  onMoveDraftPoint,
+  onRemoveDraftRoadPoint,
+  onMoveDraftRoadPoint,
+  farmId = null,
   fields = [],
   structures = [],
   roads = [],
@@ -228,6 +276,44 @@ export default function OperationalMap({
     ...actualRouteCoordinates,
   ];
   const center = getCoordinatesCenter([mapCoordinates]) || [0, 0];
+  const [cursorPos, setCursorPos] = React.useState(null);
+  const isDrawingModeActive = Boolean(drawingMode || placingStructure || drawingRoad || placingRoadProblem);
+  const showOperationalArea = Boolean(operationalArea?.geometry) && (isDrawingModeActive || visibleLayers.operationalArea !== false);
+  const showProximityZone = Boolean(operationalArea?.proximity_zone) && (isDrawingModeActive || visibleLayers.proximityZone !== false);
+
+  const operationalAreaPathOptions = isDrawingModeActive
+    ? {
+        color: '#141514',
+        weight: 3,
+        fillColor: '#1F7A4C',
+        fillOpacity: 0.18,
+        interactive: false,
+      }
+    : {
+        color: '#1F7A4C',
+        weight: 2,
+        fillColor: '#1F7A4C',
+        fillOpacity: 0.10,
+        interactive: false,
+      };
+
+  const proximityZonePathOptions = isDrawingModeActive
+    ? {
+        color: '#8A5D18',
+        weight: 2,
+        dashArray: '6 6',
+        fillColor: '#E6D6B5',
+        fillOpacity: 0.14,
+        interactive: false,
+      }
+    : {
+        color: '#b48742',
+        weight: 1.5,
+        dashArray: '6 5',
+        fillColor: '#e6d6b5',
+        fillOpacity: 0.08,
+        interactive: false,
+      };
 
   return (
     <div className={`map-shell ${compact ? 'compact' : ''}`}>
@@ -249,8 +335,9 @@ export default function OperationalMap({
           onRoadMapClick={onRoadMapClick}
           onRoadProblemMapClick={onRoadProblemMapClick}
           onRouteMapClick={onRouteMapClick}
+          onCursorMove={setCursorPos}
         />
-        <CalculatedRouteBounds routePoints={calculatedRoute?.routePoints} />
+        <CalculatedRouteBounds routePoints={calculatedRoute?.routePoints} isDrawingModeActive={isDrawingModeActive} />
         <PersistedEntityBounds
           fields={fields}
           structures={structures}
@@ -258,22 +345,28 @@ export default function OperationalMap({
           roadProblems={roadProblems}
           operationalArea={operationalArea}
           ready={fitToPersistedEntities}
+          isDrawingModeActive={isDrawingModeActive}
+          farmId={farmId || operationalArea?.farm_id}
           placingRoadProblem={placingRoadProblem}
           selectedRoadProblemRoadId={selectedRoadProblemRoadId}
         />
 
-        {visibleLayers.proximityZone !== false && operationalArea?.proximity_zone ? (
+        {showProximityZone ? (
           <GeoJSON
-            key={`farm-proximity-${JSON.stringify(operationalArea.proximity_zone)}`}
+            key={`farm-proximity-${isDrawingModeActive ? 'active' : 'idle'}-${JSON.stringify(operationalArea.proximity_zone)}`}
             data={operationalArea.proximity_zone}
-            style={{ color: '#b48742', weight: 1.5, dashArray: '6 5', fillColor: '#e6d6b5', fillOpacity: 0.08 }}
+            interactive={false}
+            pathOptions={proximityZonePathOptions}
+            style={proximityZonePathOptions}
           />
         ) : null}
-        {visibleLayers.operationalArea !== false && operationalArea?.geometry ? (
+        {showOperationalArea ? (
           <GeoJSON
-            key={`farm-area-${JSON.stringify(operationalArea.geometry)}`}
+            key={`farm-area-${isDrawingModeActive ? 'active' : 'idle'}-${JSON.stringify(operationalArea.geometry)}`}
             data={operationalArea.geometry}
-            style={{ color: '#286545', weight: 2.5, fillColor: '#72a982', fillOpacity: 0.16 }}
+            interactive={false}
+            pathOptions={operationalAreaPathOptions}
+            style={operationalAreaPathOptions}
           />
         ) : null}
 
@@ -285,13 +378,26 @@ export default function OperationalMap({
               key={field.id}
               positions={field.points}
               pathOptions={{
-                color: isSelected ? '#163f2d' : '#2c7a52',
-                fillColor: '#8ad8a9',
-                fillOpacity: isSelected ? 0.42 : 0.25,
+                color: isSelected ? '#FFFFFF' : '#1F7A4C',
+                fillColor: isSelected ? '#141514' : '#1F7A4C',
+                fillOpacity: isSelected ? 0.78 : 0.16,
                 weight: isSelected ? 3 : 2,
               }}
               eventHandlers={{
-                click: () => onSelectField?.(field.id),
+                click: (event) => {
+                  if (drawingMode) {
+                    event.originalEvent?.stopPropagation();
+                    onMapClick?.(event.latlng);
+                  } else if (placingStructure) {
+                    event.originalEvent?.stopPropagation();
+                    onStructureMapClick?.(event.latlng);
+                  } else if (drawingRoad) {
+                    event.originalEvent?.stopPropagation();
+                    onRoadMapClick?.(event.latlng);
+                  } else {
+                    onSelectField?.(field.id);
+                  }
+                },
               }}
             >
               <Popup>
@@ -311,7 +417,22 @@ export default function OperationalMap({
             key={structure.id}
             position={structure.coordinates}
             icon={structureIcon}
-            eventHandlers={{ click: () => onSelectStructure?.(structure.id) }}
+            eventHandlers={{
+              click: (event) => {
+                if (drawingMode) {
+                  event.originalEvent?.stopPropagation();
+                  onMapClick?.(event.latlng || { lat: structure.coordinates[0], lng: structure.coordinates[1] });
+                } else if (placingStructure) {
+                  event.originalEvent?.stopPropagation();
+                  onStructureMapClick?.(event.latlng || { lat: structure.coordinates[0], lng: structure.coordinates[1] });
+                } else if (drawingRoad) {
+                  event.originalEvent?.stopPropagation();
+                  onRoadMapClick?.(event.latlng || { lat: structure.coordinates[0], lng: structure.coordinates[1] });
+                } else {
+                  onSelectStructure?.(structure.id);
+                }
+              },
+            }}
           >
             <Popup>
               <div className="map-popup">
@@ -324,25 +445,78 @@ export default function OperationalMap({
           </Marker>
         )) : null}
 
+        {drawingMode && draftPoints.length > 0 && cursorPos ? (
+          <Polyline
+            positions={[
+              draftPoints[draftPoints.length - 1],
+              [cursorPos.lat, cursorPos.lng],
+              ...(draftPoints.length >= 2 ? [draftPoints[0]] : []),
+            ]}
+            pathOptions={{
+              color: '#1F7A4C',
+              weight: 2,
+              dashArray: '5 5',
+              opacity: 0.85,
+            }}
+          />
+        ) : null}
+
         {draftPoints.length > 0 ? (
           <>
-            <Polygon
-              positions={draftPoints}
-              pathOptions={{
-                color: draftValidity === 'invalid' ? '#b33d37' : draftValidity === 'proximity' ? '#b48742' : '#1d6b45',
-                fillColor: draftValidity === 'invalid' ? '#c94c45' : '#8ad8a9',
-                fillOpacity: 0.32,
-                weight: 2.5,
-                dashArray: draftValidity === 'pending' ? '7 5' : undefined,
-              }}
-            />
+            {draftPoints.length >= 3 ? (
+              <Polygon
+                positions={draftPoints}
+                pathOptions={{
+                  color: draftValidity === 'invalid' ? '#b33d37' : draftValidity === 'proximity' ? '#b48742' : '#1d6b45',
+                  fillColor: draftValidity === 'invalid' ? '#c94c45' : '#8ad8a9',
+                  fillOpacity: 0.32,
+                  weight: 2.5,
+                  dashArray: draftValidity === 'pending' ? '7 5' : undefined,
+                }}
+              />
+            ) : draftPoints.length === 2 ? (
+              <Polyline
+                positions={draftPoints}
+                pathOptions={{
+                  color: '#1d6b45',
+                  weight: 2.5,
+                  dashArray: '6 4',
+                }}
+              />
+            ) : null}
 
             {draftPoints.map((point, index) => (
-              <CircleMarker
-                key={`${point[0]}-${point[1]}-${index}`}
-                center={point}
-                radius={5}
-                pathOptions={{ color: '#1d6b45', fillColor: '#ffffff', weight: 2 }}
+              <Marker
+                key={`draft-vertex-${index}-${point[0]}-${point[1]}`}
+                position={point}
+                icon={draftVertexIcon}
+                draggable={true}
+                eventHandlers={{
+                  click: (event) => {
+                    if (event?.originalEvent) {
+                      DomEvent.stopPropagation(event.originalEvent);
+                      DomEvent.preventDefault(event.originalEvent);
+                    }
+                    if (event) {
+                      DomEvent.stopPropagation(event);
+                    }
+                    onRemoveDraftPoint?.(index);
+                  },
+                  contextmenu: (event) => {
+                    if (event?.originalEvent) {
+                      DomEvent.stopPropagation(event.originalEvent);
+                      DomEvent.preventDefault(event.originalEvent);
+                    }
+                    if (event) {
+                      DomEvent.stopPropagation(event);
+                    }
+                    onRemoveDraftPoint?.(index);
+                  },
+                  dragend: (event) => {
+                    const latlng = event.target.getLatLng();
+                    onMoveDraftPoint?.(index, { lat: latlng.lat, lng: latlng.lng });
+                  },
+                }}
               />
             ))}
           </>
@@ -353,13 +527,22 @@ export default function OperationalMap({
             key={road.id}
             positions={road.points}
             pathOptions={{
-              color: String(road.id) === selectedRoadProblemRoadId ? '#bd493d' : '#bd6c2f',
-              weight: String(road.id) === selectedRoadProblemRoadId ? 8 : 5,
-              opacity: 0.98,
+              color: String(road.id) === selectedRoadProblemRoadId ? '#C83A32' : '#686A66',
+              weight: String(road.id) === selectedRoadProblemRoadId ? 7 : 4,
+              opacity: 0.9,
             }}
             eventHandlers={{
               click: (event) => {
-                if (placingRoadProblem) {
+                if (drawingMode) {
+                  event.originalEvent?.stopPropagation();
+                  onMapClick?.(event.latlng);
+                } else if (placingStructure) {
+                  event.originalEvent?.stopPropagation();
+                  onStructureMapClick?.(event.latlng);
+                } else if (drawingRoad) {
+                  event.originalEvent?.stopPropagation();
+                  onRoadMapClick?.(event.latlng);
+                } else if (placingRoadProblem) {
                   event.originalEvent?.stopPropagation();
                   onRoadProblemMapClick?.(event.latlng);
                 } else {
@@ -408,6 +591,21 @@ export default function OperationalMap({
           />
         ) : null}
 
+        {drawingRoad && draftRoadPoints.length > 0 && cursorPos ? (
+          <Polyline
+            positions={[
+              draftRoadPoints[draftRoadPoints.length - 1],
+              [cursorPos.lat, cursorPos.lng],
+            ]}
+            pathOptions={{
+              color: '#d07831',
+              weight: 2.5,
+              dashArray: '5 5',
+              opacity: 0.85,
+            }}
+          />
+        ) : null}
+
         {draftRoadPoints.length > 0 ? (
           <>
             {draftRoadPoints.length > 1 ? (
@@ -421,11 +619,37 @@ export default function OperationalMap({
               />
             ) : null}
             {draftRoadPoints.map((point, index) => (
-              <CircleMarker
-                key={`draft-road-${index}`}
-                center={point}
-                radius={5}
-                pathOptions={{ color: '#a85921', fillColor: '#ffffff', weight: 2 }}
+              <Marker
+                key={`draft-road-vertex-${index}-${point[0]}-${point[1]}`}
+                position={point}
+                icon={draftRoadVertexIcon}
+                draggable={true}
+                eventHandlers={{
+                  click: (event) => {
+                    if (event?.originalEvent) {
+                      DomEvent.stopPropagation(event.originalEvent);
+                      DomEvent.preventDefault(event.originalEvent);
+                    }
+                    if (event) {
+                      DomEvent.stopPropagation(event);
+                    }
+                    onRemoveDraftRoadPoint?.(index);
+                  },
+                  contextmenu: (event) => {
+                    if (event?.originalEvent) {
+                      DomEvent.stopPropagation(event.originalEvent);
+                      DomEvent.preventDefault(event.originalEvent);
+                    }
+                    if (event) {
+                      DomEvent.stopPropagation(event);
+                    }
+                    onRemoveDraftRoadPoint?.(index);
+                  },
+                  dragend: (event) => {
+                    const latlng = event.target.getLatLng();
+                    onMoveDraftRoadPoint?.(index, { lat: latlng.lat, lng: latlng.lng });
+                  },
+                }}
               />
             ))}
           </>
@@ -461,17 +685,24 @@ export default function OperationalMap({
         )) : null}
 
         {plannedRouteCoordinates.length > 1 ? (
-          <Polyline positions={plannedRouteCoordinates} pathOptions={{ color: '#1464c0', weight: 6, opacity: 0.92, dashArray: '9 7' }} />
+          <>
+            <Polyline positions={plannedRouteCoordinates} pathOptions={{ color: '#FFFFFF', weight: 7, opacity: 0.9 }} />
+            <Polyline positions={plannedRouteCoordinates} pathOptions={{ color: '#141514', weight: 4, opacity: 0.96, dashArray: actualRouteCoordinates.length ? '8 6' : undefined }} />
+          </>
         ) : null}
         {actualRouteCoordinates.length > 1 ? (
-          <Polyline positions={actualRouteCoordinates} pathOptions={{ color: '#c44f2b', weight: 5, opacity: 0.96 }} />
+          <Polyline positions={actualRouteCoordinates} pathOptions={{ color: '#22A864', weight: 4.5, opacity: 0.98 }} />
         ) : null}
 
         {calculatedRoute && visibleLayers.routes !== false ? (
           <>
             <Polyline
               positions={calculatedRoute.routePoints}
-              pathOptions={{ color: '#1464c0', weight: 7, opacity: 0.95 }}
+              pathOptions={{ color: '#FFFFFF', weight: 7.5, opacity: 0.92 }}
+            />
+            <Polyline
+              positions={calculatedRoute.routePoints}
+              pathOptions={{ color: '#141514', weight: 4.5, opacity: 0.98 }}
             />
             <Marker position={calculatedRoute.origin} icon={divIcon({
               className: 'route-endpoint-marker route-origin-marker',

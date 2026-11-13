@@ -222,10 +222,10 @@ export default function RoutesPage() {
             <section className="route-result-panel">
               <header><span className="section-overline">Resultado Dijkstra</span><StatusBadge tone="success">Encontrada</StatusBadge></header>
               <div className="route-result-stat-grid">
-                <div><span>Distância</span><strong>{route.distanceMeters.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m</strong></div>
-                <div><span>Custo ponderado</span><strong>{route.totalCost.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong></div>
-                <div><span>Segmentos</span><strong>{route.segments.length}</strong></div>
-                <div><span>Tempo</span><strong>—</strong></div>
+                <div><span>Distância</span><strong className="mono">{route.distanceMeters >= 1000 ? `${(route.distanceMeters / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} km` : `${route.distanceMeters.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} m`}</strong></div>
+                <div><span>Custo ponderado</span><strong className="mono">{route.totalCost.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}</strong></div>
+                <div><span>Segmentos</span><strong className="mono">{route.segments.length}</strong></div>
+                <div><span>Problemas</span><strong><StatusBadge tone={openProblemsOnRoute ? 'warning' : 'success'}>{openProblemsOnRoute ? `${openProblemsOnRoute} alerta(s)` : 'Via livre'}</StatusBadge></strong></div>
               </div>
               <p className="route-cost-disclaimer">O custo é uma distância ponderada pelas condições viárias; tempo e consumo não são fornecidos.</p>
               {selectedRouteSegments.length ? (
@@ -242,12 +242,19 @@ export default function RoutesPage() {
               ) : null}
               {openProblemsOnRoute ? (
                 <div className="route-problem-impact">
-                  <h3><AlertTriangle size={16} />Problemas associados</h3>
-                  {routeProblems.map((problem) => (
-                    <p key={problem.id}>
-                      {problem.tipo} · {problem.gravidade} · {problem.status}
-                    </p>
-                  ))}
+                  <div className="route-problem-impact-head">
+                    <h3><AlertTriangle size={16} />Problemas associados</h3>
+                    <StatusBadge tone="warning">{openProblemsOnRoute} na rota</StatusBadge>
+                  </div>
+                  <div className="route-problem-badges">
+                    {routeProblems.map((problem) => (
+                      <div key={problem.id} className="route-problem-pill">
+                        <span>{problem.tipo}</span>
+                        <StatusBadge tone={problem.gravidade === 'CRITICA' || problem.gravidade === 'ALTA' ? 'danger' : 'warning'}>{problem.gravidade}</StatusBadge>
+                        <StatusBadge tone="neutral">{problem.status}</StatusBadge>
+                      </div>
+                    ))}
+                  </div>
                   <small>Problemas ativos podem alterar o custo ou bloquear segmentos conforme as regras atuais.</small>
                 </div>
               ) : <p className="route-no-issues">A API não retornou problemas associados à rota calculada.</p>}

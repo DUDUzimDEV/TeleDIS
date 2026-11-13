@@ -6,6 +6,7 @@ import { apiFetch, readApiResponse } from '../api/apiClient';
 import OperationalAreaMap from '../components/map/OperationalAreaMap';
 import PageHeading from '../components/ui/PageHeading';
 import { ErrorState, LoadingState } from '../components/ui/PageState';
+import StatusBadge from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 import { coordinatesFromPolygon, geometryFromPoints, validateOperationalArea } from '../utils/operationalArea';
@@ -274,6 +275,32 @@ export default function OperationalAreaPage() {
                   : 'A área atual possui anéis internos ou um formato não editável diretamente. Desenhar aqui irá substituí-la por um novo polígono; cancele para preservar a geometria atual.'
                 : 'Clique para adicionar vértices. Arraste os pontos para ajustar. Clique nos pontos intermediários para inserir vértices.'
               : 'A área e a faixa de proximidade são exibidas no mapa em camadas distintas.'}</p>
+          </div>
+          <div className="operational-area-metrics">
+            <div>
+              <span>Perímetro</span>
+              <strong className="mono">{draftPoints.length} vértices</strong>
+            </div>
+            <div>
+              <span>Raio de proximidade</span>
+              <strong className="mono">{Number(radiusDraft || 0).toLocaleString('pt-BR')} m</strong>
+            </div>
+            <div>
+              <span>Validação</span>
+              <strong>
+                <StatusBadge tone={validity === 'valid' ? 'success' : validity === 'invalid' ? 'danger' : area?.configured ? 'success' : 'neutral'}>
+                  {validity === 'valid'
+                    ? 'Compatível'
+                    : validity === 'invalid'
+                      ? 'Conflito'
+                      : validity === 'pending'
+                        ? 'Validando'
+                        : area?.configured
+                          ? 'Configurada'
+                          : 'Pendente'}
+                </StatusBadge>
+              </strong>
+            </div>
           </div>
           <label>Zona de proximidade (metros)
             <input

@@ -92,9 +92,9 @@ export default function EntityMap({
               key={`road-${road.id}`}
               positions={points}
               pathOptions={{
-                color: isAffectedSegment ? '#c55834' : isRouteSegment ? '#1464c0' : road.is_blocked ? '#a8aaa8' : '#8a7652',
-                weight: isRouteSegment ? 6 : 4,
-                opacity: isRouteSegment || isAffectedSegment ? 0.98 : 0.8,
+                color: isAffectedSegment ? '#C83A32' : isRouteSegment ? '#141514' : road.is_blocked ? '#9B9E98' : '#7A7D77',
+                weight: isRouteSegment ? 5 : 3.5,
+                opacity: isRouteSegment || isAffectedSegment ? 0.98 : 0.78,
                 dashArray: road.is_blocked ? '5 6' : undefined,
               }}
             >
@@ -111,16 +111,17 @@ export default function EntityMap({
         }) : null}
         {visibleLayers.fields !== false ? fields.map((field) => {
           const points = geoPolygonToLeaflet(field.geometry);
+          const isSelected = field.id === selectedFieldId;
           return points.length > 2 ? (
             <Polygon
               key={`field-${field.id}`}
               positions={points}
               eventHandlers={{ click: () => onSelectField?.(field.id) }}
               pathOptions={{
-                color: field.id === selectedFieldId ? '#173f2d' : '#2e7650',
-                fillColor: '#70b887',
-                fillOpacity: field.id === selectedFieldId ? 0.42 : 0.2,
-                weight: field.id === selectedFieldId ? 3 : 2,
+                color: isSelected ? '#FFFFFF' : '#1F7A4C',
+                fillColor: isSelected ? '#141514' : '#1F7A4C',
+                fillOpacity: isSelected ? 0.78 : 0.16,
+                weight: isSelected ? 3 : 2,
               }}
             >
               <Popup><strong>{field.nome}</strong><br />{field.cultura || '—'} · {field.area_ha ?? '—'} ha</Popup>
@@ -141,8 +142,13 @@ export default function EntityMap({
             <CircleMarker
               key={`problem-${problem.id}`}
               center={point}
-              radius={7}
-              pathOptions={{ color: '#fff', weight: 2, fillColor: problem.gravidade === 'CRITICA' ? '#b92e32' : '#d88332', fillOpacity: 1 }}
+              radius={7.5}
+              pathOptions={{
+                color: '#FFFFFF',
+                weight: 2.5,
+                fillColor: problem.gravidade === 'CRITICA' ? '#C83A32' : problem.gravidade === 'ALTA' ? '#D97706' : '#EAB308',
+                fillOpacity: 1,
+              }}
             >
               <Popup><strong>{problem.tipo}</strong><br />{problem.gravidade} · {problem.status}<br />{problem.road_nome}</Popup>
             </CircleMarker>
@@ -155,9 +161,9 @@ export default function EntityMap({
             <AnimatedMachineMarker
               key={`machine-${machine.id ?? machine.maquina_id ?? index}`}
               center={point}
-              radius={8}
+              radius={8.5}
               eventHandlers={{ click: () => onSelectMachine?.(machine.maquina_id) }}
-              pathOptions={{ color: '#fff', weight: 2, fillColor: '#2575a8', fillOpacity: 1 }}
+              pathOptions={{ color: '#FFFFFF', weight: 2.5, fillColor: '#141514', fillOpacity: 1 }}
             >
               <Popup>
                 <strong>{machine.nome || `Máquina ${machine.maquina_id}`}</strong>
@@ -173,10 +179,13 @@ export default function EntityMap({
           );
         }) : null}
         {plannedCoordinates.length > 1 ? (
-          <Polyline positions={plannedCoordinates} pathOptions={{ color: '#1366a8', weight: 6, opacity: 0.95, dashArray: actualRouteCoordinates.length ? '9 7' : undefined }} />
+          <>
+            <Polyline positions={plannedCoordinates} pathOptions={{ color: '#FFFFFF', weight: 7, opacity: 0.9 }} />
+            <Polyline positions={plannedCoordinates} pathOptions={{ color: '#141514', weight: 4, opacity: 0.96, dashArray: actualRouteCoordinates.length ? '8 6' : undefined }} />
+          </>
         ) : null}
         {actualRouteCoordinates.length > 1 ? (
-          <Polyline positions={actualRouteCoordinates} pathOptions={{ color: '#c44f2b', weight: 5, opacity: 0.95 }} />
+          <Polyline positions={actualRouteCoordinates} pathOptions={{ color: '#22A864', weight: 4.5, opacity: 0.98 }} />
         ) : null}
       </MapContainer>
     </div>

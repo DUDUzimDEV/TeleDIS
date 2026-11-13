@@ -192,6 +192,25 @@ export default function UsersPage() {
         </select>
         <span>{visibleUsers.length} usuário(s)</span>
       </div>
+      <div className="users-role-pills" role="group" aria-label="Filtro rápido por perfil">
+        {[
+          { value: 'all', label: 'Todos' },
+          { value: 'OPERATOR', label: 'Operadores' },
+          { value: 'SUPERVISOR', label: 'Supervisores' },
+          { value: 'COORDINATOR', label: 'Coordenadores' },
+          { value: 'FARM_ADMIN', label: 'Administradores' },
+        ].map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            className={`users-role-pill${roleFilter === item.value ? ' active' : ''}`}
+            aria-pressed={roleFilter === item.value}
+            onClick={() => setRoleFilter(item.value)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
       {usersResource.loading ? <LoadingState label="Carregando usuários..." /> : null}
       {!usersResource.loading && !usersResource.error && visibleUsers.length === 0 ? (
         <EmptyState title="Nenhum usuário encontrado" description="Não há usuários nesta fazenda com os filtros selecionados." icon={UserRoundCog} />

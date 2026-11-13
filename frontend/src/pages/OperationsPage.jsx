@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { ClipboardList, Route as RouteIcon, Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ClipboardList, Route as RouteIcon, Search, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 import { apiFetch } from '../api/apiClient';
@@ -10,6 +10,30 @@ import useApiResource from '../hooks/useApiResource';
 
 const asList = (value) => Array.isArray(value) ? value : [];
 const LIVE_REFRESH_INTERVAL_MS = 5000;
+
+const OPERATION_TYPES = [
+  { value: 'PLANTIO', label: 'Plantio' },
+  { value: 'COLHEITA', label: 'Colheita' },
+  { value: 'PULVERIZACAO', label: 'Pulverização' },
+  { value: 'PREPARO_SOLO', label: 'Preparo de Solo' },
+  { value: 'TRANSPORTE', label: 'Transporte' },
+  { value: 'MANUTENCAO', label: 'Manutenção' },
+  { value: 'APLICACAO', label: 'Aplicação' },
+  { value: 'ADUBACAO', label: 'Adubação' },
+  { value: 'DESLOCAMENTO', label: 'Deslocamento' },
+  { value: 'OUTRA', label: 'Outra' },
+];
+const OPERATION_TYPE_LABELS = Object.fromEntries(OPERATION_TYPES.map((item) => [item.value, item.label]));
+
+const OPERATION_TO_MACHINE_TYPE = {
+  PLANTIO: 'PLANTADEIRA',
+  COLHEITA: 'COLHEITADEIRA',
+  PULVERIZACAO: 'PULVERIZADOR',
+  APLICACAO: 'PULVERIZADOR',
+  PREPARO_SOLO: 'TRATOR',
+  ADUBACAO: 'TRATOR',
+  TRANSPORTE: 'TRANSPORTE',
+};
 export default function OperationsPage() {
   const { can } = useAuth();
   const [refresh, setRefresh] = useState(0);
@@ -41,11 +65,36 @@ export default function OperationsPage() {
   const plannedCount = operations.filter((operation) => operation.status === 'PLANEJADA').length;
   const completedCount = operations.filter((operation) => operation.status === 'CONCLUIDA').length;
   const [assignmentTeamId, setAssignmentTeamId] = useState('');
+  const [assignmentMachineId, setAssignmentMachineId] = useState('');
   const teamMembersResource = useApiResource(
     `/api/v1/teams/${assignmentTeamId}/members`,
     refresh,
     { enabled: Boolean(assignmentTeamId) && can('operations.assign') },
   );
+
+  const busyMachineIds = useMemo(() => new Set(
+    operations
+      .filter((op) => ['ATRIBUIDA', 'ACEITA', 'EM_EXECUCAO', 'INTERROMPIDA'].includes(op.status) && op.machine_id != null)
+      .map((op) => String(op.machine_id)),
+  ), [operations]);
+
+  const recommendedMachineType = selected ? OPERATION_TO_MACHINE_TYPE[selected.operation_type] || null : null;
+  const recommendedMachine = useMemo(() => {
+    if (!selected || selected.status !== 'PLANEJADA' || !recommendedMachineType) return null;
+    return machines.find((machine) => (
+      machine.status === 'active'
+      && !busyMachineIds.has(String(machine.id))
+      && machine.tipo === recommendedMachineType
+    )) || null;
+  }, [busyMachineIds, machines, recommendedMachineType, selected]);
+
+  useEffect(() => {
+    if (!selected || selected.status !== 'PLANEJADA') {
+      setAssignmentMachineId('');
+      return;
+    }
+    setAssignmentMachineId(recommendedMachine ? String(recommendedMachine.id) : '');
+  }, [recommendedMachine?.id, selected?.id, selected?.status]);
 
   async function send(endpoint, method, body) {
     setBusyId(endpoint);
@@ -108,7 +157,7 @@ export default function OperationsPage() {
         <h2><ClipboardList size={18} /> Planejar operação</h2>
         {fieldsResource.error ? <ErrorState message={fieldsResource.error} onRetry={fieldsResource.reload} /> : null}
         <form className="cycle-form-grid" onSubmit={createOperation}>
-          <label>Atividade<select value={form.operation_type} onChange={(event) => setForm({ ...form, operation_type: event.target.value })}>{['PLANTIO', 'COLHEITA', 'APLICACAO', 'PULVERIZACAO', 'ADUBACAO', 'PREPARO_SOLO', 'TRANSPORTE', 'MANUTENCAO', 'DESLOCAMENTO', 'OUTRA'].map((type) => <option key={type}>{type}</option>)}</select></label>
+          <label>Tipo de operação<select value={form.operation_type} onChange={(event) => setForm({ ...form, operation_type: event.target.value })}>{OPERATION_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
           <label>Nome<input required minLength="2" maxLength="160" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
           <label>Talhão<select required value={form.field_id} onChange={(event) => setForm({ ...form, field_id: event.target.value })}><option value="">Selecione</option>{fields.map((field) => <option key={field.id} value={field.id}>{field.nome}</option>)}</select></label>
           <label>Prioridade<select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>{['BAIXA', 'NORMAL', 'ALTA', 'URGENTE'].map((priority) => <option key={priority}>{priority}</option>)}</select></label>
@@ -172,10 +221,34 @@ export default function OperationsPage() {
                 {teamMembersResource.error ? <ErrorState message={teamMembersResource.error} onRetry={teamMembersResource.reload} /> : null}
                 <form className="cycle-inline-form" onSubmit={(event) => assignOperation(event, selected)}>
                   <label>Equipe<select required name="team_id" value={assignmentTeamId} onChange={(event) => setAssignmentTeamId(event.target.value)}><option value="">Selecione</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>
-                  <label>Máquina<select required name="machine_id" defaultValue=""><option value="">Selecione</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.nome} · {machine.status}</option>)}</select></label>
+                  <label>
+                    Máquina
+                    <select
+                      required
+                      name="machine_id"
+                      value={assignmentMachineId}
+                      onChange={(event) => setAssignmentMachineId(event.target.value)}
+                    >
+                      <option value="">Selecione</option>
+                      {machines.map((machine) => {
+                        const isRecommended = recommendedMachine && String(machine.id) === String(recommendedMachine.id);
+                        return (
+                          <option key={machine.id} value={machine.id}>
+                            {machine.nome}{machine.tipo ? ` (${machine.tipo})` : ''} · {machine.status}{isRecommended ? ' · Recomendada' : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
                   <label>Operador<select required key={assignmentTeamId} name="operator_id" defaultValue="" disabled={!assignmentTeamId || teamMembersResource.loading}><option value="">Selecione</option>{operators.map((operator) => <option key={operator.user_id} value={operator.user_id}>{operator.full_name || operator.username}</option>)}</select></label>
                   <button className="toolbar-button primary" disabled={Boolean(busyId)} type="submit">Atribuir operação</button>
                 </form>
+                {recommendedMachine && assignmentMachineId === String(recommendedMachine.id) ? (
+                  <p className="operation-recommendation-hint" role="status">
+                    <Sparkles size={14} aria-hidden="true" />
+                    Máquina recomendada para {OPERATION_TYPE_LABELS[selected.operation_type] || selected.operation_type} selecionada automaticamente ({recommendedMachine.nome}).
+                  </p>
+                ) : null}
               </section>
             ) : null}
             {selected.machine_id && !['CONCLUIDA', 'CANCELADA'].includes(selected.status) && can('operations.assign') ? (

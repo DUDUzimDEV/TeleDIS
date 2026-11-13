@@ -1,20 +1,28 @@
 import React, { useState } from 'react';
-import { Map, MapPin } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { Map, MapPin, Plus } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import EntityMap from '../components/map/EntityMap';
 import PageHeading from '../components/ui/PageHeading';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/PageState';
+import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 
 const asList = (value) => Array.isArray(value) ? value : [];
 
 export default function FieldsPage() {
+  const { activeFarmId, can } = useAuth();
   const fieldsResource = useApiResource('/api/v1/fields');
+  const operationalAreaResource = useApiResource(
+    activeFarmId && can('farm.view') ? `/api/v1/farms/${activeFarmId}/operational-area` : '',
+    0,
+  );
   const [searchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState(() => Number(searchParams.get('fieldId')) || null);
   const fields = asList(fieldsResource.data);
   const selected = fields.find((field) => field.id === selectedId) || fields[0] || null;
+
+  const isAreaConfigured = operationalAreaResource.data?.configured;
 
   return (
     <div className="territory-screen">
@@ -22,14 +30,45 @@ export default function FieldsPage() {
         eyebrow="Gestão territorial"
         title="Talhões"
         description="Áreas cadastradas na operação, exibidas a partir das geometrias oficiais."
+        actions={
+          can('fields.create') ? (
+            <Link to="/mapa?mode=field" className="button button-primary button-small">
+              <Plus size={16} /> Novo talhão
+            </Link>
+          ) : null
+        }
       />
+
+      {!operationalAreaResource.loading && !operationalAreaResource.error && operationalAreaResource.data && !isAreaConfigured ? (
+        <div className="operational-area-warning-banner" role="alert">
+          <div>
+            <strong>Área operacional não configurada</strong>
+            <p>O cadastro de talhões exige que a área operacional da fazenda esteja definida para validação espacial.</p>
+          </div>
+          {activeFarmId ? (
+            <Link to={`/fazendas/${activeFarmId}/area-operacional`} className="button button-primary button-small">
+              Configurar área operacional
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
       {fieldsResource.error ? <ErrorState message={fieldsResource.error} onRetry={fieldsResource.reload} /> : null}
       <section className="territory-workspace">
         <aside className="territory-list-panel">
           <div className="list-panel-heading"><strong>Áreas cadastradas</strong><span>{fieldsResource.loading ? '…' : fields.length}</span></div>
           {fieldsResource.loading ? <LoadingState label="Carregando talhões..." /> : null}
           {!fieldsResource.loading && !fieldsResource.error && !fields.length ? (
-            <EmptyState title="Nenhum talhão cadastrado" description="Cadastre uma área pelo Mapa Operacional para exibi-la aqui." icon={Map} />
+            <div className="territory-empty-wrapper">
+              <EmptyState title="Nenhum talhão cadastrado" description="Cadastre uma área pelo Mapa Operacional para exibi-la aqui." icon={Map} />
+              {can('fields.create') ? (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
+                  <Link to="/mapa?mode=field" className="button button-primary button-small">
+                    <Plus size={16} /> Desenhar talhão no mapa
+                  </Link>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           <div className="territory-list">
             {fields.map((field) => (

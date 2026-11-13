@@ -13,6 +13,7 @@ class Machine(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="active")
+    tipo: Mapped[str | None] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     farm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     base_structure_id: Mapped[int | None] = mapped_column(

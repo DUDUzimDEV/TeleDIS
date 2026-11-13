@@ -1,239 +1,272 @@
-import React from 'react';
-import { Activity, BellRing, ClipboardList, MapPinned, Route, Sprout, Tractor, Warehouse } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowUpRight, Plus, Sprout } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-const problemItems = ['Máquinas', 'Operadores', 'Talhões', 'Estradas', 'Operações', 'Rotas', 'Dados'];
+import heroImg from '../assets/images/pexels-skylake-16668323.jpg';
+import innovationImgA from '../assets/images/pexels-abdelhak-elghali-129199099-16216968.jpg';
+import innovationImgB from '../assets/images/pexels-florence-mathiot-417781-37078680.jpg';
+import cardMachinesImg from '../assets/images/pexels-abpllc-6680155.jpg';
+import cardMapImg from '../assets/images/pexels-masoodaslami-32047260.jpg';
+import cardTelemetryImg from '../assets/images/pexels-masoodaslami-32047280.jpg';
 
-const solutionFlow = ['Fazenda', 'Estruturas', 'Máquinas', 'Operações', 'Rotas', 'Execução', 'Telemetria', 'Dados'];
-
-const featureCards = [
-  { title: 'Fazendas', description: 'Visão clara do contexto produtivo e operacional por unidade de negócio.', icon: Sprout },
-  { title: 'Máquinas', description: 'Consulte o cadastro da frota, estados operacionais e as últimas posições recebidas.', icon: Tractor },
-  { title: 'Talhões', description: 'Mapeamento e organização do território produtivo para decisões no campo.', icon: MapPinned },
-  { title: 'Estruturas', description: 'Cadastro de estruturas, bases e pontos de apoio no ambiente agrícola.', icon: Warehouse },
-  { title: 'Estradas', description: 'Planejamento e acompanhamento de acessos e deslocamentos logísticos.', icon: Route },
-  { title: 'Operações', description: 'Coordenação de tarefas e execução em cada unidade de produção.', icon: ClipboardList },
-  { title: 'Rotas', description: 'Definição de trajetos e sequências de deslocamento para a frota.', icon: MapPinned },
-  { title: 'Telemetria', description: 'Consulte medições e posições enviadas pelas máquinas, com horário e origem do dado.', icon: Activity },
-  { title: 'Eventos e ocorrências', description: 'Acompanhe leituras de telemetria e problemas viários registrados no sistema.', icon: BellRing },
+const navLinks = [
+  { href: '#inicio', label: 'Início' },
+  { href: '#plataforma', label: 'Plataforma' },
+  { href: '#modulos', label: 'Módulos' },
+  { href: '#faq', label: 'Dúvidas' },
 ];
 
-const securityItems = [
-  'Sessões autenticadas',
-  'RBAC por perfil e permissões',
-  'Contexto da fazenda ativa',
-  'Ações condicionadas às permissões',
-  'Auditoria disponível para perfis autorizados',
+// Números derivados do próprio escopo do produto (sem métricas de clientes inventadas).
+const stats = [
+  { value: '100%', label: 'Web e responsivo', detail: 'Acesse do escritório ou da cabine, sem instalar nada.' },
+  { value: '9', label: 'Módulos integrados', detail: 'Fazendas, talhões, estruturas, estradas, máquinas, operações, rotas, telemetria e eventos.' },
+  { value: '24/7', label: 'Telemetria via MQTT', detail: 'Leituras das máquinas recebidas continuamente e guardadas com horário e origem.' },
 ];
 
-const technologyItems = ['React', 'Vite', 'FastAPI', 'PostgreSQL', 'PostGIS', 'MQTT', 'Docker'];
+const moduleCards = [
+  {
+    key: 'maquinas',
+    image: cardMachinesImg,
+    title: 'Frota e operações conectadas',
+    description: 'Cadastre máquinas, atribua operações a operadores e acompanhe cada etapa — do aceite à conclusão.',
+  },
+  {
+    key: 'mapa',
+    image: cardMapImg,
+    title: 'Território mapeado com precisão',
+    description: 'Desenhe talhões, estradas e estruturas dentro da área operacional, com validação espacial PostGIS.',
+  },
+  {
+    key: 'telemetria',
+    image: cardTelemetryImg,
+    title: 'Telemetria e eventos em tempo real',
+    description: 'Posições e medições chegam por MQTT e viram histórico, alertas e relatórios por operação.',
+  },
+];
+
+const faqItems = [
+  {
+    question: 'O que é o TeleDis?',
+    answer: 'É uma plataforma web de gestão e inteligência operacional agrícola que reúne fazendas, máquinas, operações, rotas e telemetria em um só lugar.',
+  },
+  {
+    question: 'Preciso instalar algum aplicativo?',
+    answer: 'Não. O TeleDis roda no navegador e se adapta a computadores, tablets e celulares — incluindo o Modo Cabine para operadores.',
+  },
+  {
+    question: 'Como os dados das máquinas chegam à plataforma?',
+    answer: 'As máquinas publicam leituras via MQTT. O backend consome essas mensagens, valida e armazena o histórico associado à operação em andamento.',
+  },
+  {
+    question: 'Quem pode ver e editar as informações?',
+    answer: 'O acesso é controlado por perfil e por fazenda (RBAC). Cada usuário só enxerga e executa as ações permitidas para o seu papel.',
+  },
+];
 
 export default function LandingPage() {
-  return (
-    <div className="landing-page">
-      <header className="landing-header">
-        <div className="landing-brand">
-          <div className="brand-mark">T</div>
-          <div>
-            <div className="brand-name">TeleDis</div>
-          </div>
-        </div>
+  const [openFaq, setOpenFaq] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
 
-        <nav className="landing-nav" aria-label="Navegação principal">
-          <a href="#problema">Problema</a>
-          <a href="#solucao">Solução</a>
-          <a href="#funcionalidades">Funcionalidades</a>
-          <a href="#seguranca">Segurança</a>
-          <a href="#tecnologia">Tecnologia</a>
+  useEffect(() => {
+    function handleScroll() {
+      setIsScrolled(window.scrollY > 80);
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  return (
+    <div className="lp-page">
+      {/* ===================== NAVBAR PRINCIPAL ===================== */}
+      <header className="lp-nav">
+        <Link to="/" className="lp-nav-logo">TELEDIS</Link>
+
+        <nav
+          className={`lp-center-nav lp-nav-links ${isScrolled ? 'opacity-0 invisible' : 'opacity-100 visible'}`}
+          aria-label="Navegação principal"
+        >
+          {navLinks.map((link, index) => (
+            <a key={link.href} href={link.href} className={index === 0 ? 'is-active' : undefined}>
+              {link.label}
+            </a>
+          ))}
         </nav>
 
-        <Link to="/login" className="button button-primary button-small">
+        <Link to="/login" className="lp-pill-cta">
           Entrar
+          <span className="lp-pill-cta-icon"><ArrowUpRight size={14} strokeWidth={2.4} aria-hidden="true" /></span>
         </Link>
       </header>
 
-      <main>
-        <section className="hero-section">
-          <div className="hero-copy reveal">
-            <span className="eyebrow">Gestão e inteligência operacional agrícola</span>
-            <h1>Inteligência operacional para o campo.</h1>
-            <p>
-              Conecte máquinas, operações, rotas e dados agrícolas em uma única plataforma.
+      {/* ===================== PÍLULA FLUTUANTE CLONE ===================== */}
+      <div
+        className={`lp-floating-pill ${isScrolled ? 'active' : ''}`}
+        aria-label="Navegação rápida"
+      >
+        {navLinks.map((link) => (
+          <a key={link.href} href={link.href}>
+            {link.label}
+          </a>
+        ))}
+
+        <Link to="/login" className="primary-button lp-pill-cta">
+          Entrar
+          <span className="lp-pill-cta-icon"><ArrowUpRight size={14} strokeWidth={2.4} aria-hidden="true" /></span>
+        </Link>
+      </div>
+
+      {/* ===================== HERO ===================== */}
+      <section className="lp-hero" id="inicio">
+        <img
+          src={heroImg}
+          alt="Inteligência operacional no campo"
+          className="lp-hero-bg"
+          loading="eager"
+        />
+        <div className="lp-hero-overlay" aria-hidden="true" />
+
+        <div className="lp-hero-content">
+          <span className="lp-hero-tag">Gestão operacional agrícola</span>
+          <h1>
+            Inteligência operacional
+            <br />
+            para o campo
+          </h1>
+          <p>
+            Conectamos máquinas, operadores, talhões e rotas em uma única plataforma — para decidir com dados,
+            não com suposições.
+          </p>
+          <Link to="/login" className="lp-pill-cta lp-pill-cta--lg">
+            Acessar a plataforma
+            <span className="lp-pill-cta-icon"><ArrowUpRight size={16} strokeWidth={2.4} aria-hidden="true" /></span>
+          </Link>
+        </div>
+      </section>
+
+      {/* ===================== INNOVATING (ESCURA) ===================== */}
+      <section className="lp-innovate" id="plataforma">
+        <div className="lp-container lp-innovate-grid">
+          <div className="lp-innovate-left">
+            <h2 className="lp-display">
+              Inovando o futuro
+              <br />
+              da operação agrícola
+            </h2>
+
+            <div className="lp-innovate-photos">
+              <img
+                src={innovationImgA}
+                alt="Operação no talhão agrícola"
+                className="lp-photo lp-photo--tall"
+                loading="lazy"
+              />
+              <img
+                src={innovationImgB}
+                alt="Manejo e cuidados na lavoura"
+                className="lp-photo lp-photo--short"
+                loading="lazy"
+              />
+            </div>
+          </div>
+
+          <div className="lp-innovate-right">
+            <p className="lp-innovate-lead">
+              O TeleDis combina mapas, telemetria e fluxo de operações para que a fazenda trabalhe de forma mais
+              rápida, segura e rastreável — do planejamento à execução no talhão.
             </p>
-            <div className="hero-actions">
-              <Link to="/login" className="button button-primary">
-                Entrar na plataforma
-              </Link>
-              <a href="#funcionalidades" className="button button-secondary">
-                Ver funcionalidades
-              </a>
-            </div>
 
-            <div className="hero-capabilities" aria-label="Áreas conectadas pela plataforma">
-              <div>
-                <strong>Território</strong>
-                <span>fazendas, talhões e estruturas</span>
-              </div>
-              <div>
-                <strong>Operação</strong>
-                <span>máquinas, equipes e rotas</span>
-              </div>
-              <div>
-                <strong>Dados</strong>
-                <span>telemetria e histórico</span>
-              </div>
-            </div>
+            <ul className="lp-stats">
+              {stats.map((stat) => (
+                <li key={stat.label} className="lp-stat">
+                  <strong>{stat.value}</strong>
+                  <span>{stat.label}</span>
+                  <small>{stat.detail}</small>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {/* ===================== WHERE TECHNOLOGY MEETS (CLARA) ===================== */}
+      <section className="lp-modules" id="modulos">
+        <div className="lp-container">
+          <div className="lp-section-head">
+            <h2 className="lp-display lp-display--dark">
+              Onde a tecnologia encontra
+              <br />
+              as raízes do campo
+            </h2>
+            <p>
+              Cada módulo resolve uma parte real da rotina agrícola e conversa com os demais, formando uma visão
+              única da operação.
+            </p>
           </div>
 
-          <div className="hero-visual reveal">
-            <div className="visual-panel">
-              <div className="map-surface" role="img" aria-label="Ilustração conceitual de talhões, estrada, rota e máquina">
-                <div className="map-grid" />
-                <div className="map-line line-a" />
-                <div className="map-line line-b" />
-                <div className="map-pin pin-a" aria-hidden="true">T</div>
-                <div className="map-pin pin-b" aria-hidden="true">M</div>
-                <div className="map-pin pin-c" aria-hidden="true">E</div>
-                <div className="map-card floating-card"><span>Prévia conceitual</span><strong>Mapa operacional</strong></div>
-              </div>
-              <p className="visual-disclaimer">Ilustração demonstrativa; não representa dados ou uma fazenda reais.</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="info-section" id="problema">
-          <div className="section-heading reveal">
-            <span className="eyebrow">O problema</span>
-            <h2>Operação agrícola fragmentada.</h2>
-          </div>
-
-          <div className="chips-grid reveal">
-            {problemItems.map((item) => (
-              <div key={item} className="chip-item" aria-label={item}><span>{item}</span></div>
-            ))}
-          </div>
-        </section>
-
-        <section className="info-section solution-section" id="solucao">
-          <div className="section-heading reveal">
-            <span className="eyebrow">A solução</span>
-            <h2>Uma visão conectada do campo.</h2>
-          </div>
-
-          <div className="flow-steps reveal" aria-label="Fluxo da solução">
-            {solutionFlow.map((step, index) => (
-              <React.Fragment key={step}>
-                <div className="flow-step">
-                  <span>{step}</span>
-                </div>
-                {index < solutionFlow.length - 1 ? <div className="flow-arrow" aria-hidden="true">→</div> : null}
-              </React.Fragment>
-            ))}
-          </div>
-        </section>
-
-        <section className="info-section" id="funcionalidades">
-          <div className="section-heading reveal">
-            <span className="eyebrow">Funcionalidades</span>
-            <h2>Todo o ciclo operacional em um único lugar.</h2>
-          </div>
-
-          <div className="feature-grid reveal">
-            {featureCards.map((feature) => (
-              <article key={feature.title} className="feature-card">
-                <div className="feature-icon" aria-hidden="true"><feature.icon size={20} strokeWidth={1.8} /></div>
-                <h3>{feature.title}</h3>
-                <p>{feature.description}</p>
+          <div className="lp-card-grid">
+            {moduleCards.map((card) => (
+              <article key={card.key} className="lp-card">
+                <img
+                  src={card.image}
+                  alt={card.title}
+                  className="lp-card-img"
+                  loading="lazy"
+                />
+                <h3>{card.title}</h3>
+                <p>{card.description}</p>
               </article>
             ))}
           </div>
-        </section>
-
-        <section className="info-section operational-map-section">
-          <div className="section-heading reveal">
-            <span className="eyebrow">Mapa operacional</span>
-            <h2>Visão estratégica do território.</h2>
-          </div>
-
-          <div className="operational-map reveal">
-            <div className="mini-map">
-              <div className="map-grid mini" />
-              <div className="map polygon-one" />
-              <div className="map polygon-two" />
-              <div className="map-line mini-line-a" />
-              <div className="map-line mini-line-b" />
-              <div className="map-pin mini-pin-a" aria-hidden="true">M</div>
-              <div className="map-pin mini-pin-b" aria-hidden="true">R</div>
-              <div className="map-pin mini-pin-c" aria-hidden="true">E</div>
-              <div className="legend-row">
-                <span><i className="legend-dot green" />Talhões</span>
-                <span><i className="legend-dot amber" />Máquinas</span>
-                <span><i className="legend-dot blue" />Rotas</span>
-              </div>
-            </div>
-            <p className="visual-disclaimer">Composição ilustrativa para apresentar as camadas do mapa; os dados da plataforma dependem dos cadastros e das leituras recebidas.</p>
-          </div>
-        </section>
-
-        <section className="info-section technology-section" id="tecnologia">
-          <div className="section-heading reveal">
-            <span className="eyebrow">Tecnologia</span>
-            <h2>Uma base construída para operações conectadas.</h2>
-            <p>Aplicação web, serviços de API, dados geográficos e mensageria trabalham juntos na plataforma.</p>
-          </div>
-          <ul className="technology-list reveal" aria-label="Tecnologias utilizadas">
-            {technologyItems.map((technology) => <li key={technology}>{technology}</li>)}
-          </ul>
-        </section>
-
-        <section className="info-section" id="seguranca">
-          <div className="section-heading reveal">
-            <span className="eyebrow">Segurança</span>
-            <h2>Controle operacional com segurança de negócio.</h2>
-          </div>
-
-          <div className="security-grid reveal">
-            {securityItems.map((item) => (
-              <div key={item} className="security-item">
-                <span className="security-check" aria-hidden="true">✓</span>
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="cta-section reveal">
-          <div>
-            <span className="eyebrow">Pronto para operar com mais clareza?</span>
-            <h2>Transforme o campo em uma operação conectada.</h2>
-          </div>
-          <Link to="/login" className="button button-primary">
-            Entrar na plataforma
-          </Link>
-        </section>
-      </main>
-
-      <footer className="landing-footer">
-        <div className="landing-footer-brand">
-          <div className="landing-brand">
-            <div className="brand-mark">T</div>
-            <div>
-              <div className="brand-name">TeleDis</div>
-              <div className="brand-subtitle">Operação agrícola</div>
-            </div>
-          </div>
-          <p>Gestão operacional agrícola com dados, mapas e telemetria em um só lugar.</p>
         </div>
-        <nav className="landing-footer-nav" aria-label="Links do rodapé">
-          <strong>Explore</strong>
-          <a href="#funcionalidades">Funcionalidades</a>
-          <a href="#solucao">Como funciona</a>
-          <a href="#tecnologia">Tecnologia</a>
-          <Link to="/login">Entrar na plataforma</Link>
-        </nav>
-        <div className="landing-footer-meta">
-          <strong>TeleDis</strong>
-          <span>Plataforma de gestão e inteligência operacional agrícola.</span>
+      </section>
+
+      {/* ===================== FAQ ===================== */}
+      <section className="lp-faq" id="faq">
+        <div className="lp-container lp-faq-grid">
+          <div className="lp-faq-head">
+            <h2 className="lp-display lp-display--dark">
+              Tem dúvidas?
+              <br />
+              A gente responde.
+            </h2>
+            <p>Respostas rápidas sobre a plataforma, os dados e a segurança de acesso.</p>
+          </div>
+
+          <div className="lp-faq-list">
+            {faqItems.map((item, index) => {
+              const isOpen = openFaq === index;
+              return (
+                <div key={item.question} className={`lp-faq-item${isOpen ? ' is-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="lp-faq-question"
+                    aria-expanded={isOpen}
+                    aria-controls={`lp-faq-answer-${index}`}
+                    onClick={() => setOpenFaq(isOpen ? -1 : index)}
+                  >
+                    <span>{item.question}</span>
+                    <span className="lp-faq-icon" aria-hidden="true"><Plus size={16} strokeWidth={2.4} /></span>
+                  </button>
+                  <div id={`lp-faq-answer-${index}`} className="lp-faq-answer" role="region" hidden={!isOpen}>
+                    <p>{item.answer}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* ===================== FOOTER ===================== */}
+      <footer className="lp-footer">
+        <div className="lp-container lp-footer-inner">
+          <div className="lp-footer-brand">
+            <span className="lg-visual-badge"><Sprout size={18} aria-hidden="true" /></span>
+            <strong>TeleDis</strong>
+          </div>
+          <span>© {new Date().getFullYear()} TeleDis · Plataforma de gestão e inteligência operacional agrícola.</span>
+          <Link to="/login" className="lp-footer-link">Entrar na plataforma</Link>
         </div>
       </footer>
     </div>

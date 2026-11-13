@@ -15,6 +15,8 @@ from simulator.simulator import (
     SimulationState,
     SimulatorConfig,
     TeleDisApiClient,
+    generate_field_work_path,
+    point_in_geojson_polygon,
 )
 
 
@@ -537,3 +539,164 @@ def test_publisher_connects_asynchronously_and_enables_reconnect():
     assert client.connection == ("localhost", 1883, 60)
     assert client.reconnect_delays == (1, 30)
     assert client.loop_started is True
+
+
+def test_config_defaults_to_all_machines_when_machine_id_is_all_or_omitted():
+    config = SimulatorConfig.from_environment(
+        {
+            "SIMULATOR_API_TOKEN": "jwt",
+            "SIMULATOR_FARM_ID": "2",
+            "SIMULATOR_MACHINE_ID": "ALL",
+        }
+    )
+    assert config.all_machines is True
+    per_machine = config.for_machine(12, "Trator 12")
+    assert per_machine.all_machines is False
+    assert per_machine.machine_id == 12
+    assert per_machine.mqtt_client_id == "teledis-simulator-machine-12"
+
+
+def test_generate_field_work_path_stays_strictly_inside_polygon():
+    polygon = {
+        "type": "Polygon",
+        "coordinates": [[
+            [-47.4520, -23.5020],
+            [-47.4500, -23.5020],
+            [-47.4500, -23.5000],
+            [-47.4520, -23.5000],
+            [-47.4520, -23.5020],
+        ]],
+    }
+    waypoints = generate_field_work_path(polygon, num_swaths=4)
+    assert len(waypoints) >= 6
+    assert all(point_in_geojson_polygon(lat, lng, polygon) for lat, lng in waypoints)
+
+
+def test_reroutes_when_new_severe_road_problem_appears_after_route_calculation():
+    class FakeApiClient:
+        def __init__(self):
+            self.recalculated = []
+            self.contexts = [
+                {
+                    "machine": {"id": 7, "farm_id": 3, "tipo": "TRATOR"},
+                    "farm": {"id": 3},
+                    "simulator_state": "TRAVELING",
+                    "operation": {"id": 42, "status": "EM_EXECUCAO", "operation_type": "PLANTIO"},
+                    "current_location": {"latitude": -23.5012, "longitude": -47.4521},
+                    "field": {"location": {"latitude": -23.4982, "longitude": -47.4521}},
+                    "planned_route": {
+                        "id": 100,
+                        "calculated_at": "2026-11-12T10:00:00Z",
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-47.4521, -23.5012], [-47.4521, -23.4982]],
+                        },
+                    },
+                },
+                {
+                    "machine": {"id": 7, "farm_id": 3, "tipo": "TRATOR"},
+                    "farm": {"id": 3},
+                    "simulator_state": "TRAVELING",
+                    "operation": {"id": 42, "status": "EM_EXECUCAO", "operation_type": "PLANTIO"},
+                    "current_location": {"latitude": -23.5012, "longitude": -47.4521},
+                    "field": {"location": {"latitude": -23.4982, "longitude": -47.4521}},
+                    "planned_route": {
+                        "id": 101,
+                        "calculated_at": "2026-11-12T10:06:00Z",
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-47.4521, -23.5012], [-47.4515, -23.4995], [-47.4521, -23.4982]],
+                        },
+                    },
+                },
+            ]
+
+        def calculate_operation_route(self, operation_id):
+            self.recalculated.append(operation_id)
+            return {}
+
+        def resolve_context(self):
+            return self.contexts[1]
+
+    class DummyPublisher:
+        def publish_reading(self, reading):
+            return True
+
+    config = SimulatorConfig(machine_id=7, farm_id=3, auto_operate=True)
+    engine = SimulationEngine(config, AgriculturalMachine(config), DummyPublisher())
+    engine.start(datetime(2026, 11, 12, 10, 5, tzinfo=timezone.utc))
+    api_client = FakeApiClient()
+    road_problems = [
+        {
+            "id": 9,
+            "status": "ABERTO",
+            "gravidade": "CRITICA",
+            "tipo": "VIA_BLOQUEADA",
+            "created_at": "2026-11-12T10:05:00Z",
+        }
+    ]
+
+    state = engine.sync_context(api_client.contexts[0], api_client=api_client, road_problems=road_problems)
+    assert state == "TRAVELING"
+    assert api_client.recalculated == [42]
+    engine.stop()
+
+
+def test_auto_transitions_operation_and_emits_low_fuel_alert():
+    class FakeApiClient:
+        def __init__(self):
+            self.actions = []
+            self.routes_calculated = []
+
+        def transition_operation(self, operation_id, action, reason=None):
+            self.actions.append((operation_id, action))
+            return {}
+
+        def calculate_operation_route(self, operation_id):
+            self.routes_calculated.append(operation_id)
+            return {}
+
+        def resolve_context(self):
+            return {
+                "machine": {"id": 7, "farm_id": 3, "tipo": "PLANTADEIRA"},
+                "farm": {"id": 3},
+                "simulator_state": "AT_BASE",
+                "operation": {"id": 55, "status": "EM_EXECUCAO", "operation_type": "PLANTIO"},
+                "current_location": {"latitude": -23.5012, "longitude": -47.4521},
+                "base_structure": {"id": 1, "location": {"latitude": -23.5012, "longitude": -47.4521}},
+            }
+
+    class DummyPublisher:
+        def publish_reading(self, reading):
+            return True
+
+    config = SimulatorConfig(machine_id=7, farm_id=3, auto_operate=True)
+    machine = AgriculturalMachine(config)
+    machine.fuel = 18.5
+    engine = SimulationEngine(config, machine, DummyPublisher())
+    engine.start(datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc))
+    api = FakeApiClient()
+
+    initial_context = {
+        "machine": {"id": 7, "farm_id": 3, "tipo": "PLANTADEIRA"},
+        "farm": {"id": 3},
+        "simulator_state": "READY_FOR_OPERATION",
+        "operation": {"id": 55, "status": "ATRIBUIDA", "operation_type": "PLANTIO"},
+        "current_location": {"latitude": -23.5012, "longitude": -47.4521},
+        "planned_route": None,
+        "base_structure": {"id": 1, "location": {"latitude": -23.5012, "longitude": -47.4521}},
+    }
+    engine.sync_context(initial_context, api_client=api)
+    assert api.actions == [(55, "accept"), (55, "start")]
+    assert api.routes_calculated == [55]
+    # Fuel restored at AT_BASE
+    assert machine.fuel == 95.0
+
+    # Low fuel (< 20%) triggers MQTT alert payload
+    machine.fuel = 15.0
+    reading = machine.next_reading(datetime(2026, 11, 12, 10, 1, tzinfo=timezone.utc))
+    payloads = machine.payloads(reading)
+    assert "alerta" in payloads
+    assert payloads["alerta"]["metric"] == "alerta_combustivel_baixo"
+    assert payloads["alerta"]["source"] == "SIMULATED"
+    engine.stop()

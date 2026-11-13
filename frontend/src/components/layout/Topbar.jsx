@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Bell, Building2, ChevronDown, ChevronRight, LogOut, Menu, MonitorPlay, Search, UserRound, X } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
@@ -51,6 +51,8 @@ function getBreadcrumb(pathname) {
 export default function Topbar({ onMenuClick = () => {}, menuOpen = false, presentationMode = false, onTogglePresentation = () => {} }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const accountMenuRef = useRef(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const {
     user,
     role,
@@ -70,7 +72,7 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false, prese
     ? '/alertas'
     : can('road_problems.view') ? '/problemas-vias' : null;
 
-  React.useEffect(() => {
+  useEffect(() => {
     function openCommandPalette(event) {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -102,6 +104,28 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false, prese
       navigate('/login', { replace: true });
     }
   }
+
+  useEffect(() => {
+    setAccountMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return undefined;
+    const handleOutsideClick = (event) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setAccountMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [accountMenuOpen]);
 
   return (
     <header className="topbar">
@@ -180,27 +204,36 @@ export default function Topbar({ onMenuClick = () => {}, menuOpen = false, prese
             <Bell size={18} aria-hidden="true" />
           </Link>
         ) : null}
-        <details className="account-menu">
-          <summary className="account-menu-trigger" aria-label={`Perfil de ${name}`}>
+        <div className="account-menu" ref={accountMenuRef}>
+          <button
+            type="button"
+            className="account-menu-trigger"
+            aria-label={`Perfil de ${name}`}
+            aria-expanded={accountMenuOpen}
+            aria-haspopup="menu"
+            onClick={() => setAccountMenuOpen((open) => !open)}
+          >
             <span className="user-avatar">{user ? initials : <UserRound size={17} />}</span>
             <span className="account-trigger-copy">
               <strong>{name}</strong>
               <small>{roleLabels[role] || role || 'Usuário'}</small>
             </span>
             <ChevronDown size={15} aria-hidden="true" />
-          </summary>
-          <div className="account-menu-panel">
-            <strong>{name}</strong>
-            <span>{roleLabels[role] || role || 'Usuário'}</span>
-            <span className="account-farm-label">
-              <Building2 size={14} aria-hidden="true" />
-              {activeFarm?.name || 'Fazenda não selecionada'}
-            </span>
-            <button type="button" onClick={handleLogout}>
-              <LogOut size={16} aria-hidden="true" />Sair da conta
-            </button>
-          </div>
-        </details>
+          </button>
+          {accountMenuOpen ? (
+            <div className="account-menu-panel" role="menu">
+              <strong>{name}</strong>
+              <span>{roleLabels[role] || role || 'Usuário'}</span>
+              <span className="account-farm-label">
+                <Building2 size={14} aria-hidden="true" />
+                {activeFarm?.name || 'Fazenda não selecionada'}
+              </span>
+              <button type="button" role="menuitem" onClick={handleLogout}>
+                <LogOut size={16} aria-hidden="true" />Sair da conta
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
       {actionError ? <p className="farm-switch-error" role="alert">{actionError}</p> : null}
       <span className="sr-only">Fazenda ativa: {activeFarm?.name || 'não selecionada'}</span>

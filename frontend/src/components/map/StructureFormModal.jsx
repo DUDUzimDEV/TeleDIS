@@ -1,4 +1,6 @@
 import React from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export const structureTypeOptions = [
   { value: 'OFICINA', label: 'Oficina' },
@@ -18,6 +20,7 @@ export default function StructureFormModal({
   formData,
   error,
   isSaving,
+  farmId,
   onClose,
   onTypeChange,
   onChange,
@@ -26,6 +29,13 @@ export default function StructureFormModal({
   if (!isOpen || !selectedPoint) {
     return null;
   }
+
+  const errorMessage = typeof error === 'string' ? error : error?.message || '';
+  const errorCode = typeof error === 'object' ? error?.code : '';
+  const isAreaError = Boolean(
+    ['OPERATIONAL_AREA_NOT_CONFIGURED', 'OUTSIDE_OPERATIONAL_AREA'].includes(errorCode)
+    || /área operacional|fora da área|perímetro/i.test(errorMessage),
+  );
 
   return (
     <div className="field-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="structure-modal-title">
@@ -77,7 +87,23 @@ export default function StructureFormModal({
           </div>
         </div>
 
-        {error ? <p className="field-form-error" role="alert">{error}</p> : null}
+        {errorMessage ? (
+          <div className="field-form-error-banner" role="alert">
+            <div className="field-form-error-content">
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>{errorMessage}</span>
+            </div>
+            {isAreaError && farmId ? (
+              <Link
+                to={`/fazendas/${farmId}/area-operacional`}
+                className="button button-secondary button-small field-form-error-action"
+                onClick={onClose}
+              >
+                Configurar área operacional
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="field-modal-actions">
           <button type="button" className="secondary-button" onClick={onClose} disabled={isSaving}>

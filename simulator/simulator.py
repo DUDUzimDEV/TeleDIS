@@ -4,7 +4,7 @@ import math
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -19,11 +19,160 @@ from dotenv import dotenv_values
 logger = logging.getLogger("teledis.simulator")
 SIMULATED_DATA_SOURCE = "SIMULATED"
 TIME_MULTIPLIERS = {1, 5, 10, 20, 50}
+ACTIVE_OP_STATUSES = {"ATRIBUIDA", "ACEITA", "EM_EXECUCAO", "INTERROMPIDA"}
 
 
 class LocationBoundaryValidator(Protocol):
     def validate_location(self, latitude: float, longitude: float) -> None:
         ...
+
+
+def _parse_bool(value: str | bool | None, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "nao", "off", ""}
+
+
+def _parse_iso_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def point_in_polygon(lat: float, lng: float, ring: list[list[float]] | list[tuple[float, float]]) -> bool:
+    """Pure-Python ray-casting point-in-polygon for GeoJSON [lng, lat] rings."""
+    if not ring or len(ring) < 3:
+        return False
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        xi, yi = float(ring[i][0]), float(ring[i][1])
+        xj, yj = float(ring[j][0]), float(ring[j][1])
+        # Check if point is on horizontal span of edge
+        if ((yi > lat) != (yj > lat)) and (
+            lng < (xj - xi) * (lat - yi) / ((yj - yi) if (yj - yi) != 0 else 1e-12) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def point_in_geojson_polygon(lat: float, lng: float, geometry: dict | None) -> bool:
+    """Checks whether (lat, lng) is inside a GeoJSON Polygon, MultiPolygon, or Feature."""
+    if not isinstance(geometry, dict):
+        return False
+    if geometry.get("type") == "Feature":
+        geometry = geometry.get("geometry")
+    if not isinstance(geometry, dict):
+        return False
+    geom_type = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, list):
+        return False
+    if geom_type == "Polygon":
+        if not coords or not point_in_polygon(lat, lng, coords[0]):
+            return False
+        for hole in coords[1:]:
+            if point_in_polygon(lat, lng, hole):
+                return False
+        return True
+    if geom_type == "MultiPolygon":
+        for poly in coords:
+            if isinstance(poly, list) and poly and point_in_polygon(lat, lng, poly[0]):
+                if not any(point_in_polygon(lat, lng, hole) for hole in poly[1:]):
+                    return True
+        return False
+    return False
+
+
+def generate_field_work_path(
+    geometry: dict | None,
+    *,
+    start_point: tuple[float, float] | None = None,
+    num_swaths: int = 6,
+) -> list[tuple[float, float]]:
+    """Generates back-and-forth parallel work swaths strictly inside a field polygon."""
+    if not isinstance(geometry, dict):
+        return []
+    geom = geometry.get("geometry") if geometry.get("type") == "Feature" else geometry
+    if not isinstance(geom, dict):
+        return []
+    geom_type = geom.get("type")
+    coords = geom.get("coordinates")
+    if not isinstance(coords, list) or not coords:
+        return []
+
+    rings: list[list] = []
+    if geom_type == "Polygon":
+        rings = [coords[0]]
+    elif geom_type == "MultiPolygon":
+        rings = [poly[0] for poly in coords if isinstance(poly, list) and poly]
+    else:
+        return []
+
+    outer = rings[0]
+    if len(outer) < 3:
+        return []
+
+    lngs = [float(pt[0]) for pt in outer]
+    lats = [float(pt[1]) for pt in outer]
+    min_lat, max_lat = min(lats), max(lats)
+    if max_lat - min_lat <= 1e-8:
+        return []
+
+    waypoints: list[tuple[float, float]] = []
+    if start_point is not None and point_in_geojson_polygon(start_point[0], start_point[1], geom):
+        waypoints.append((float(start_point[0]), float(start_point[1])))
+
+    swath_count = max(2, int(num_swaths))
+    for step in range(swath_count):
+        fraction = (step + 0.5) / swath_count
+        scan_lat = min_lat + (max_lat - min_lat) * fraction
+        intersections: list[float] = []
+        for ring in rings:
+            n = len(ring)
+            for idx in range(n):
+                x1, y1 = float(ring[idx][0]), float(ring[idx][1])
+                x2, y2 = float(ring[(idx + 1) % n][0]), float(ring[(idx + 1) % n][1])
+                if (y1 <= scan_lat < y2) or (y2 <= scan_lat < y1):
+                    x_int = x1 + (scan_lat - y1) * (x2 - x1) / (y2 - y1)
+                    intersections.append(x_int)
+        intersections.sort()
+        if len(intersections) < 2:
+            continue
+        # Pair entry/exit intersections and inset slightly so points lie strictly inside
+        pairs = list(zip(intersections[0::2], intersections[1::2]))
+        if step % 2 == 1:
+            pairs = list(reversed(pairs))
+        for left_lng, right_lng in pairs:
+            span = right_lng - left_lng
+            if span <= 1e-8:
+                continue
+            inset = span * 0.05
+            p_a = (scan_lat, left_lng + inset)
+            p_b = (scan_lat, right_lng - inset)
+            ordered = (p_a, p_b) if step % 2 == 0 else (p_b, p_a)
+            for cand in ordered:
+                if point_in_geojson_polygon(cand[0], cand[1], geom):
+                    if not waypoints or AgriculturalMachine._haversine_distance_m(waypoints[-1], cand) > 0.5:
+                        waypoints.append(cand)
+
+    return waypoints
 
 
 @dataclass(frozen=True)
@@ -37,10 +186,14 @@ class SimulatorConfig:
     mqtt_password: str = field(default="", repr=False)
     mqtt_client_id: str = "teledis-simulator-machine-1"
     machine_id: int = 1
+    all_machines: bool = False
     machine_name: str = "MF 4270"
     interval: float = 5.0
     time_multiplier: int = 1
     speed_kmh: float = 8.0
+    auto_operate: bool = True
+    work_duration_seconds: float = 75.0
+    fleet_refresh_interval: float = 30.0
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None):
@@ -49,7 +202,16 @@ class SimulatorConfig:
             dotenv_config = dotenv_values(Path(__file__).resolve().parents[1] / ".env")
             environ = os.environ
 
-        machine_id = int(environ.get("SIMULATOR_MACHINE_ID", "1"))
+        raw_machine_id = str(
+            environ.get("SIMULATOR_MACHINE_ID", dotenv_config.get("SIMULATOR_MACHINE_ID", "ALL")) or "ALL"
+        ).strip()
+        if raw_machine_id.upper() == "ALL":
+            all_machines = True
+            machine_id = 1
+        else:
+            all_machines = False
+            machine_id = int(raw_machine_id)
+
         farm_id_value = environ.get(
             "SIMULATOR_FARM_ID",
             dotenv_config.get("SIMULATOR_FARM_ID"),
@@ -64,22 +226,47 @@ class SimulatorConfig:
                 dotenv_config.get("SIMULATOR_API_TOKEN") or "",
             ),
             farm_id=int(farm_id_value) if farm_id_value else None,
-            mqtt_host=environ.get("MQTT_HOST", "localhost"),
-            mqtt_port=int(environ.get("MQTT_PORT", "1883")),
+            mqtt_host=environ.get("MQTT_HOST", dotenv_config.get("MQTT_HOST") or "localhost"),
+            mqtt_port=int(environ.get("MQTT_PORT", dotenv_config.get("MQTT_PORT") or "1883")),
             mqtt_username=environ.get("MQTT_USERNAME", dotenv_config.get("MQTT_USERNAME") or ""),
             mqtt_password=environ.get("MQTT_PASSWORD", dotenv_config.get("MQTT_PASSWORD") or ""),
             mqtt_client_id=environ.get(
                 "SIMULATOR_MQTT_CLIENT_ID",
-                f"teledis-simulator-machine-{machine_id}",
+                "teledis-simulator-fleet" if all_machines else f"teledis-simulator-machine-{machine_id}",
             ),
             machine_id=machine_id,
+            all_machines=all_machines,
             machine_name=environ.get("SIMULATOR_NAME", "MF 4270"),
             interval=float(environ.get("SIMULATOR_INTERVAL", "5")),
             time_multiplier=int(environ.get("SIMULATOR_TIME_MULTIPLIER", "1")),
             speed_kmh=float(environ.get("SIMULATOR_SPEED_KMH", "8")),
+            auto_operate=_parse_bool(environ.get("SIMULATOR_AUTO_OPERATE", "true"), default=True),
+            work_duration_seconds=float(environ.get("SIMULATOR_WORK_DURATION_SECONDS", "75")),
+            fleet_refresh_interval=float(environ.get("SIMULATOR_FLEET_REFRESH_INTERVAL", "30")),
         )
         config.validate()
         return config
+
+    def for_machine(self, machine_id: int, machine_name: str | None = None) -> "SimulatorConfig":
+        return SimulatorConfig(
+            api_base_url=self.api_base_url,
+            api_token=self.api_token,
+            farm_id=self.farm_id,
+            mqtt_host=self.mqtt_host,
+            mqtt_port=self.mqtt_port,
+            mqtt_username=self.mqtt_username,
+            mqtt_password=self.mqtt_password,
+            mqtt_client_id=f"teledis-simulator-machine-{machine_id}",
+            machine_id=int(machine_id),
+            all_machines=False,
+            machine_name=machine_name or f"Máquina {machine_id}",
+            interval=self.interval,
+            time_multiplier=self.time_multiplier,
+            speed_kmh=self.speed_kmh,
+            auto_operate=self.auto_operate,
+            work_duration_seconds=self.work_duration_seconds,
+            fleet_refresh_interval=self.fleet_refresh_interval,
+        )
 
     def validate(self):
         if not self.mqtt_host.strip():
@@ -90,7 +277,7 @@ class SimulatorConfig:
             raise ValueError("SIMULATOR_FARM_ID deve ser maior que zero")
         if not 1 <= self.mqtt_port <= 65535:
             raise ValueError("MQTT_PORT deve estar entre 1 e 65535")
-        if self.machine_id <= 0:
+        if not self.all_machines and self.machine_id <= 0:
             raise ValueError("SIMULATOR_MACHINE_ID deve ser maior que zero")
         if self.interval <= 0:
             raise ValueError("SIMULATOR_INTERVAL deve ser maior que zero")
@@ -100,6 +287,8 @@ class SimulatorConfig:
             )
         if not 0 < self.speed_kmh <= 40:
             raise ValueError("SIMULATOR_SPEED_KMH deve ser maior que zero e no máximo 40")
+        if self.work_duration_seconds <= 0:
+            raise ValueError("SIMULATOR_WORK_DURATION_SECONDS deve ser maior que zero")
 
 
 @dataclass(frozen=True)
@@ -124,7 +313,7 @@ def build_payloads(machine_id: int, reading: MachineReading) -> dict[str, dict]:
     }
     if reading.operation_id is not None:
         common["operation_id"] = reading.operation_id
-    return {
+    payloads = {
         "temperatura": {
             **common,
             "valor": reading.temperature,
@@ -156,6 +345,14 @@ def build_payloads(machine_id: int, reading: MachineReading) -> dict[str, dict]:
             "longitude": reading.longitude,
         },
     }
+    if reading.fuel < 20.0:
+        payloads["alerta"] = {
+            **common,
+            "metric": "alerta_combustivel_baixo",
+            "valor": reading.fuel,
+            "unidade": "%",
+        }
+    return payloads
 
 
 class AgriculturalMachine:
@@ -171,6 +368,9 @@ class AgriculturalMachine:
         self.route_points: list[tuple[float, float]] = []
         self.route_index = 0
         self._moving = False
+        self.regime = "IDLE"
+        self.machine_type: str | None = None
+        self.operation_type: str | None = None
 
     @property
     def has_position(self) -> bool:
@@ -186,12 +386,19 @@ class AgriculturalMachine:
         self.latitude = float(latitude)
         self.longitude = float(longitude)
 
-    def set_route(self, points: list[tuple[float, float]] | list[dict] | None, *, speed_kmh: float | None = None):
+    def set_route(
+        self,
+        points: list[tuple[float, float]] | list[dict] | None,
+        *,
+        speed_kmh: float | None = None,
+        regime: str | None = None,
+    ):
         if points is None:
             self.route_points = []
             self.route_index = 0
             self._moving = False
             self.speed = 0.0
+            self.regime = regime or "IDLE"
             return
         normalized_points: list[tuple[float, float]] = []
         for point in points:
@@ -200,7 +407,7 @@ class AgriculturalMachine:
             else:
                 normalized_points.append((float(point[0]), float(point[1])))
         if len(normalized_points) < 2:
-            self.set_route(None)
+            self.set_route(None, regime=regime)
             return
         if not self.has_position:
             self.set_position(*normalized_points[0])
@@ -210,9 +417,10 @@ class AgriculturalMachine:
         self.route_points = normalized_points
         self.route_index = 0
         self._moving = True
+        self.regime = regime or "TRAVELING"
         self.speed = self.config.speed_kmh if speed_kmh is None else max(0.0, float(speed_kmh))
         if self.speed == 0:
-            self.set_route(None)
+            self.set_route(None, regime=regime)
 
     def _advance_along_route(self, elapsed_seconds: float) -> None:
         if not self.route_points or not self._moving:
@@ -255,13 +463,26 @@ class AgriculturalMachine:
         self.cycle += 1
         elapsed_seconds = self.config.interval * self.config.time_multiplier
         simulated_cycle = self.cycle * self.config.time_multiplier
-        if self._moving:
-            self.speed = self.config.speed_kmh
 
-        rpm = round(950 + self.speed * 145)
-        temperature = 74.0 + self.speed * 1.55 + 0.7 * math.sin(simulated_cycle / 5.0)
+        if self._moving:
+            if self.regime == "WORKING":
+                rpm = round(1400 + self.speed * 80)
+                temperature = 78.0 + self.speed * 1.4 + 0.8 * math.sin(simulated_cycle / 5.0)
+            else:
+                rpm = round(950 + self.speed * 145)
+                temperature = 74.0 + self.speed * 1.55 + 0.7 * math.sin(simulated_cycle / 5.0)
+        elif self.regime == "BASE":
+            self.speed = 0.0
+            rpm = 850
+            temperature = 71.0 + 0.4 * math.sin(simulated_cycle / 5.0)
+        else:
+            self.speed = 0.0
+            rpm = 950
+            temperature = 74.0 + 0.7 * math.sin(simulated_cycle / 5.0)
+
+        fuel_factor = 0.018 if self.regime == "WORKING" else 0.012
         fuel_used = (
-            0.001 + 0.012 * (self.speed / 6.0) if self._moving else 0.001
+            0.001 + fuel_factor * (self.speed / 6.0) if self._moving else 0.001
         ) * self.config.time_multiplier
         self.fuel = max(0.0, self.fuel - fuel_used)
         self.engine_hours += elapsed_seconds / 3600
@@ -491,6 +712,10 @@ class SimulationEngine:
         self._lock_file = None
         self._route_context_key = None
         self.context_state = "STOPPED"
+        self._working_operation_id: int | None = None
+        self._work_started = False
+        self._work_completed = False
+        self._handled_road_problem_keys: set[tuple] = set()
 
     def _acquire_machine_lock(self):
         if self._lock_file is not None:
@@ -546,7 +771,84 @@ class SimulationEngine:
             time_multiplier=self.config.time_multiplier,
         )
 
-    def sync_context(self, context: dict) -> str:
+    def _maybe_auto_advance_operation(self, context: dict, api_client) -> dict:
+        if api_client is None or not self.config.auto_operate:
+            return context
+        operation = context.get("operation") or context.get("active_operation") or {}
+        if not isinstance(operation, dict) or operation.get("id") is None:
+            return context
+        op_id = int(operation["id"])
+        op_status = operation.get("status")
+        if op_status == "ATRIBUIDA":
+            logger.info("Auto-operando: aceitando operação #%s (máquina %s)", op_id, self.config.machine_id)
+            api_client.transition_operation(op_id, "accept")
+            if context.get("planned_route") is None:
+                api_client.calculate_operation_route(op_id)
+            api_client.transition_operation(op_id, "start")
+            return api_client.resolve_context()
+        if op_status == "ACEITA":
+            logger.info("Auto-operando: iniciando operação #%s (máquina %s)", op_id, self.config.machine_id)
+            if context.get("planned_route") is None:
+                api_client.calculate_operation_route(op_id)
+            api_client.transition_operation(op_id, "start")
+            return api_client.resolve_context()
+        if op_status == "EM_EXECUCAO" and context.get("planned_route") is None and context.get("simulator_state") != "EXECUTING_OPERATION":
+            logger.info("Auto-operando: calculando rota faltante da operação #%s", op_id)
+            api_client.calculate_operation_route(op_id)
+            return api_client.resolve_context()
+        return context
+
+    def _maybe_reroute_on_road_problem(
+        self,
+        context: dict,
+        api_client,
+        road_problems: list[dict] | None,
+    ) -> dict:
+        if api_client is None or not road_problems:
+            return context
+        planned_route = context.get("planned_route")
+        operation = context.get("active_operation") or context.get("operation") or {}
+        if not isinstance(planned_route, dict) or operation.get("id") is None:
+            return context
+        route_ts = _parse_iso_datetime(planned_route.get("calculated_at"))
+        if route_ts is None:
+            return context
+        op_id = int(operation["id"])
+        for problem in road_problems:
+            if not isinstance(problem, dict):
+                continue
+            status = problem.get("status")
+            severity = problem.get("gravidade")
+            tipo = problem.get("tipo")
+            if status not in {"ABERTO", "EM_ANALISE"}:
+                continue
+            if severity not in {"ALTA", "CRITICA"} and tipo != "VIA_BLOQUEADA":
+                continue
+            problem_ts = _parse_iso_datetime(problem.get("updated_at") or problem.get("created_at"))
+            if problem_ts is None or problem_ts <= route_ts:
+                continue
+            problem_key = (op_id, problem.get("id"), problem_ts.isoformat())
+            if problem_key in self._handled_road_problem_keys:
+                continue
+            self._handled_road_problem_keys.add(problem_key)
+            logger.info(
+                "Problema viário detectado (%s/%s); recalculando rota da operação #%s via Dijkstra",
+                tipo,
+                severity,
+                op_id,
+            )
+            api_client.calculate_operation_route(op_id)
+            self._route_context_key = None
+            return api_client.resolve_context()
+        return context
+
+    def sync_context(
+        self,
+        context: dict,
+        *,
+        api_client=None,
+        road_problems: list[dict] | None = None,
+    ) -> str:
         machine = context.get("machine") or {}
         farm = context.get("farm") or {}
         try:
@@ -562,9 +864,16 @@ class SimulationEngine:
         ):
             raise SimulatorApiError("O contexto retornado não pertence à máquina e fazenda configuradas.")
 
+        self.machine.machine_type = machine.get("tipo")
+        context = self._maybe_auto_advance_operation(context, api_client)
+
+        if str(context.get("simulator_state") or "") == "TRAVELING":
+            context = self._maybe_reroute_on_road_problem(context, api_client, road_problems)
+
         active_operation = context.get("active_operation") or context.get("operation") or {}
         operation_id = None
         if isinstance(active_operation, dict):
+            self.machine.operation_type = active_operation.get("operation_type")
             try:
                 operation_id = int(active_operation.get("id"))
             except (TypeError, ValueError):
@@ -582,11 +891,60 @@ class SimulationEngine:
                 )
 
         self.context_state = str(context.get("simulator_state") or "ERROR")
+
+        if self.context_state == "AT_BASE":
+            if self.machine.fuel < 95.0:
+                self.machine.fuel = 95.0
+            self._working_operation_id = None
+            self._work_started = False
+            self._work_completed = False
+            self.machine.set_route(None, regime="BASE")
+            self._route_context_key = None
+            return self.context_state
+
+        if self.context_state == "EXECUTING_OPERATION":
+            field_geometry = (context.get("field") or {}).get("geometry")
+            if self._working_operation_id == operation_id and self._work_started:
+                if not self.machine.is_moving and not self._work_completed:
+                    self._work_completed = True
+                    if api_client is not None and self.config.auto_operate and operation_id is not None:
+                        logger.info("Varredura concluída; finalizando operação #%s", operation_id)
+                        api_client.transition_operation(
+                            operation_id,
+                            "complete",
+                            "Varredura do talhão concluída pelo simulador.",
+                        )
+                        refreshed = api_client.resolve_context()
+                        self.context_state = str(refreshed.get("simulator_state") or "AT_BASE")
+                return self.context_state
+
+            work_points = generate_field_work_path(
+                field_geometry,
+                start_point=(self.machine.latitude, self.machine.longitude) if self.machine.has_position else None,
+            )
+            if len(work_points) >= 2:
+                total_m = sum(
+                    AgriculturalMachine._haversine_distance_m(a, b)
+                    for a, b in zip(work_points, work_points[1:])
+                )
+                calibrated_kmh = (total_m / self.config.work_duration_seconds) * 3.6
+                work_speed = max(4.0, min(14.0, calibrated_kmh))
+                self.machine.set_route(work_points, speed_kmh=work_speed, regime="WORKING")
+                self._working_operation_id = operation_id
+                self._work_started = True
+                self._work_completed = False
+                self._route_context_key = ("work", operation_id)
+                return self.context_state
+
+            self.machine.set_route(None, regime="WORKING")
+            self._route_context_key = None
+            return self.context_state
+
         route = None
         route_key = None
         if self.context_state == "TRAVELING":
             route = context.get("planned_route")
-            route_key = ("operation", (route or {}).get("id"))
+            route_key = ("operation", (route or {}).get("id"), (route or {}).get("calculated_at"))
         elif self.context_state == "RETURNING_TO_BASE":
             route = context.get("return_route")
             route_key = ("base", (context.get("base_structure") or {}).get("id"))
@@ -604,10 +962,10 @@ class SimulationEngine:
                 (self.machine.latitude, self.machine.longitude),
             )
             if route_key != self._route_context_key:
-                self.machine.set_route(points, speed_kmh=self.config.speed_kmh)
+                self.machine.set_route(points, speed_kmh=self.config.speed_kmh, regime="TRAVELING")
                 self._route_context_key = route_key
         else:
-            self.machine.set_route(None)
+            self.machine.set_route(None, regime="IDLE")
             self._route_context_key = None
         return self.context_state
 
@@ -631,10 +989,11 @@ class SimulationEngine:
             time_multiplier=self.config.time_multiplier,
         )
 
-    def step(self) -> tuple[MachineReading, bool]:
+    def step(self, now: datetime | None = None) -> tuple[MachineReading, bool]:
         if self.state.run_status is not SimulationRunStatus.RUNNING or self.clock is None:
             raise RuntimeError("O simulador precisa estar em execução para avançar.")
-        reading = self.machine.next_reading(self.clock.advance(self.config.interval))
+        advanced_clock = self.clock.advance(self.config.interval)
+        reading = self.machine.next_reading(now or advanced_clock)
         return reading, self.publisher.publish_reading(reading)
 
     def stop(self):
@@ -662,6 +1021,32 @@ class TeleDisApiClient:
             raise SimulatorApiError("SIMULATOR_API_TOKEN é obrigatório para validar o contexto.")
         if config.farm_id is None:
             raise SimulatorApiError("SIMULATOR_FARM_ID é obrigatório para validar a fazenda ativa.")
+
+    def list_machines(self) -> list[dict]:
+        response = self._request("GET", "/api/v1/machines")
+        data = response.get("data")
+        return data if isinstance(data, list) else []
+
+    def list_road_problems(self) -> list[dict]:
+        response = self._request("GET", "/api/v1/road-problems")
+        data = response.get("data")
+        return data if isinstance(data, list) else []
+
+    def calculate_operation_route(self, operation_id: int) -> dict:
+        response = self._request(
+            "POST",
+            f"/api/v1/operations/{operation_id}/route",
+            {"reason": "Rota recalculada automaticamente pelo simulador operacional."},
+        )
+        return response.get("data") or {}
+
+    def transition_operation(self, operation_id: int, action: str, reason: str | None = None) -> dict:
+        response = self._request(
+            "POST",
+            f"/api/v1/simulator/operations/{operation_id}/transition",
+            {"action": action, "reason": reason},
+        )
+        return response.get("data") or {}
 
     def resolve_context(self) -> dict:
         response = self._request(
@@ -760,76 +1145,132 @@ def display_reading(
     )
 
 
+class _MachineRunner:
+    def __init__(self, config: SimulatorConfig):
+        self.config = config
+        self.api_client = TeleDisApiClient(config)
+        self.machine = AgriculturalMachine(config)
+        self.publisher = MqttPublisher(config, boundary_validator=self.api_client)
+        self.engine = SimulationEngine(config, self.machine, self.publisher)
+        self.last_logged_state: str | None = None
+
+    def start(self):
+        self.publisher.connect()
+        self.engine.start()
+
+    def stop(self):
+        self.engine.stop()
+        self.publisher.disconnect()
+
+
+def _discover_active_machines(base_config: SimulatorConfig, fleet_client: TeleDisApiClient) -> list[SimulatorConfig]:
+    if not base_config.all_machines:
+        return [base_config]
+    machines = fleet_client.list_machines()
+    configs: list[SimulatorConfig] = []
+    for item in machines:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        if str(item.get("status") or "").lower() != "active":
+            continue
+        configs.append(base_config.for_machine(int(item["id"]), item.get("nome") or item.get("code")))
+    return configs
+
+
 def run():
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    config = SimulatorConfig.from_environment()
-    api_client = TeleDisApiClient(config)
-    context = api_client.resolve_context()
-    logger.info(
-        "Contexto validado: máquina=%s fazenda=%s estado=%s operação=%s",
-        config.machine_id,
-        config.farm_id,
-        context["simulator_state"],
-        context["operation_state"],
-    )
-    machine = AgriculturalMachine(config)
-    publisher = MqttPublisher(config, boundary_validator=api_client)
-    engine = SimulationEngine(config, machine, publisher)
-    publisher.connect()
-    engine.start()
+    base_config = SimulatorConfig.from_environment()
+    fleet_client = TeleDisApiClient(base_config)
+    runners: dict[int, _MachineRunner] = {}
+    last_fleet_refresh = 0.0
 
-    logger.info(
-        "Simulador iniciado para máquina %s (%s), velocidade física %.1f km/h, "
-        "intervalo %.1fs, fator de tempo %sx; pressione Ctrl+C para parar",
-        config.machine_id,
-        config.machine_name,
-        config.speed_kmh,
-        config.interval,
-        config.time_multiplier,
-    )
-    last_logged_state = None
+    def sync_runners():
+        nonlocal last_fleet_refresh
+        now_mono = time.monotonic()
+        if runners and base_config.all_machines and (now_mono - last_fleet_refresh) < base_config.fleet_refresh_interval:
+            return
+        target_configs = _discover_active_machines(base_config, fleet_client)
+        last_fleet_refresh = now_mono
+        target_ids = {cfg.machine_id for cfg in target_configs}
+        for obsolete_id in [mid for mid in runners if mid not in target_ids]:
+            runners.pop(obsolete_id).stop()
+        for cfg in target_configs:
+            if cfg.machine_id not in runners:
+                runner = _MachineRunner(cfg)
+                runner.start()
+                runners[cfg.machine_id] = runner
+                logger.info(
+                    "Runner iniciado para máquina %s (%s), intervalo %.1fs, multiplicador %sx",
+                    cfg.machine_id,
+                    cfg.machine_name,
+                    cfg.interval,
+                    cfg.time_multiplier,
+                )
+
     try:
         while True:
             try:
-                context = api_client.resolve_context()
-                simulator_state = engine.sync_context(context)
-                if not machine.has_position:
-                    logger.warning(
-                        "Nenhuma posição real ou base configurada para a máquina %s; "
-                        "nenhuma coordenada será publicada.",
-                        config.machine_id,
-                    )
-                    time.sleep(config.interval)
-                    continue
-                reading, published = engine.step()
+                sync_runners()
             except SimulatorConnectionError as exc:
-                logger.warning(
-                    "Conexão temporariamente indisponível; ciclo sem publicação: %s",
-                    exc,
-                )
-                time.sleep(config.interval)
+                logger.warning("Falha temporária ao descobrir frota: %s", exc)
+                time.sleep(base_config.interval)
                 continue
-            except SimulatorApiError as exc:
-                logger.error("Simulador interrompido por erro de contexto/validação: %s", exc)
-                break
-            if simulator_state != last_logged_state:
-                logger.info(
-                    "Estado operacional atualizado: máquina=%s estado=%s motivo=%s",
-                    config.machine_id,
-                    simulator_state,
-                    context.get("state_reason", "não informado"),
-                )
-                last_logged_state = simulator_state
-            display_reading(config, reading, published, simulator_state)
-            time.sleep(config.interval)
+
+            if not runners:
+                logger.info("Nenhuma máquina ativa encontrada na fazenda %s; aguardando...", base_config.farm_id)
+                time.sleep(base_config.interval)
+                continue
+
+            try:
+                road_problems = fleet_client.list_road_problems()
+            except SimulatorApiError:
+                road_problems = []
+
+            for runner in list(runners.values()):
+                try:
+                    context = runner.api_client.resolve_context()
+                    simulator_state = runner.engine.sync_context(
+                        context,
+                        api_client=runner.api_client,
+                        road_problems=road_problems,
+                    )
+                    if not runner.machine.has_position:
+                        logger.warning(
+                            "Nenhuma posição real ou base configurada para a máquina %s; aguardando.",
+                            runner.config.machine_id,
+                        )
+                        continue
+                    reading, published = runner.engine.step(now=datetime.now(timezone.utc))
+                except SimulatorConnectionError as exc:
+                    logger.warning(
+                        "Conexão indisponível para máquina %s; ciclo sem publicação: %s",
+                        runner.config.machine_id,
+                        exc,
+                    )
+                    continue
+                except SimulatorApiError as exc:
+                    logger.error("Erro de contexto/validação na máquina %s: %s", runner.config.machine_id, exc)
+                    continue
+
+                if simulator_state != runner.last_logged_state:
+                    logger.info(
+                        "Estado operacional atualizado: máquina=%s estado=%s motivo=%s",
+                        runner.config.machine_id,
+                        simulator_state,
+                        context.get("state_reason", "não informado"),
+                    )
+                    runner.last_logged_state = simulator_state
+                display_reading(runner.config, reading, published, simulator_state)
+
+            time.sleep(base_config.interval)
     except KeyboardInterrupt:
         logger.info("Encerrando simulador")
     finally:
-        engine.stop()
-        publisher.disconnect()
+        for runner in list(runners.values()):
+            runner.stop()
 
 
 if __name__ == "__main__":

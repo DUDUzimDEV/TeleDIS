@@ -62,7 +62,6 @@ const navigationGroups = [
     items: [
       { label: 'Fazendas', to: '/fazendas', icon: Sprout, permission: 'farm.update' },
       { label: 'Equipes', to: '/equipes', icon: UsersRound, permission: 'teams.view' },
-      { label: 'Operadores', to: '/operadores', icon: UsersRound, permission: 'users.view' },
       { label: 'Usuários', to: '/usuarios', icon: UserCog, permission: 'users.view' },
       { label: 'Auditoria', to: '/auditoria', icon: FileClock, permission: 'audit.view' },
       { label: 'Configurações', to: '/configuracoes', icon: Settings2, permission: 'settings.view' },

@@ -13,7 +13,17 @@ import { formatDateTime } from '../utils/geoData';
 import { getCommunicationStatus, getLatestTimestamp } from '../utils/liveStatus';
 
 const asList = (value) => Array.isArray(value) ? value : [];
-const emptyForm = { name: '', code: '', status: 'active' };
+const MACHINE_TYPES = [
+  { value: 'TRATOR', label: 'Trator' },
+  { value: 'PLANTADEIRA', label: 'Plantadeira' },
+  { value: 'COLHEITADEIRA', label: 'Colheitadeira' },
+  { value: 'PULVERIZADOR', label: 'Pulverizador' },
+  { value: 'PREPARO_SOLO', label: 'Implemento de Preparo' },
+  { value: 'TRANSPORTE', label: 'Transporte / Apoio' },
+  { value: 'OUTRO', label: 'Outro' },
+];
+const MACHINE_TYPE_LABELS = Object.fromEntries(MACHINE_TYPES.map((item) => [item.value, item.label]));
+const emptyForm = { name: '', code: '', tipo: 'TRATOR', status: 'active' };
 const LIVE_REFRESH_INTERVAL_MS = 5000;
 
 export default function MachinesPage() {
@@ -118,7 +128,12 @@ export default function MachinesPage() {
 
   function beginEdit(machine) {
     setEditingId(machine.id);
-    setForm({ name: machine.nome || '', code: machine.code || '', status: machine.status || 'active' });
+    setForm({
+      name: machine.nome || '',
+      code: machine.code || '',
+      tipo: machine.tipo || 'TRATOR',
+      status: machine.status || 'active',
+    });
     setFormError('');
     setShowForm(true);
   }
@@ -144,6 +159,7 @@ export default function MachinesPage() {
           body: JSON.stringify({
             name: form.name.trim(),
             code: form.code.trim(),
+            tipo: form.tipo,
             status: form.status,
           }),
         },
@@ -204,6 +220,17 @@ export default function MachinesPage() {
               />
             </label>
             <label>
+              Tipo de máquina
+              <select required value={form.tipo} onChange={(event) => setForm({ ...form, tipo: event.target.value })}>
+                {MACHINE_TYPES.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+                {form.tipo && !MACHINE_TYPE_LABELS[form.tipo] ? (
+                  <option value={form.tipo}>{form.tipo}</option>
+                ) : null}
+              </select>
+            </label>
+            <label>
               Status
               <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
                 <option value="active">Ativa</option>
@@ -250,7 +277,7 @@ export default function MachinesPage() {
         </label>
         <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="Filtrar por tipo">
           <option value="all">Todos os tipos</option>
-          {types.map((type) => <option value={type} key={type}>{type}</option>)}
+          {types.map((type) => <option value={type} key={type}>{MACHINE_TYPE_LABELS[type] || type}</option>)}
         </select>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por status">
           <option value="all">Todos os status</option>
@@ -276,9 +303,12 @@ export default function MachinesPage() {
                 <span className="asset-icon"><Tractor size={17} /></span>
                 <span className="asset-details">
                   <strong>{machine.nome || `Máquina ${machine.id}`}</strong>
-                  <small>{machine.code || `#${machine.id}`} · {machine.tipo || 'Tipo não informado'}</small>
+                  <small>{machine.code || `#${machine.id}`}</small>
                 </span>
-                <StatusBadge>{machine.status}</StatusBadge>
+                <span className="fleet-item-badges">
+                  <StatusBadge tone="info">{MACHINE_TYPE_LABELS[machine.tipo] || machine.tipo || 'Sem tipo'}</StatusBadge>
+                  <StatusBadge>{machine.status}</StatusBadge>
+                </span>
               </button>
             ))}
           </div>
@@ -303,7 +333,7 @@ export default function MachinesPage() {
               </header>
               <div className="machine-detail-meta">
                 <div><span>Código</span><strong>{selected.code || '—'}</strong></div>
-                <div><span>Tipo</span><strong>{selected.tipo || 'Não informado pela API'}</strong></div>
+                <div><span>Tipo</span><strong>{MACHINE_TYPE_LABELS[selected.tipo] || selected.tipo || 'Não informado pela API'}</strong></div>
                 <div><span>Último GPS</span><strong>{formatDateTime(latestLocation?.timestamp)}</strong></div>
                 <div><span>Latitude</span><strong>{latestLocation?.latitude ?? '—'}</strong></div>
                 <div><span>Longitude</span><strong>{latestLocation?.longitude ?? '—'}</strong></div>

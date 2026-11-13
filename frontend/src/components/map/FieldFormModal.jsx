@@ -1,4 +1,6 @@
 import React from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const cropOptions = ['Cana-de-açúcar', 'Soja', 'Milho', 'Algodão', 'Outro'];
 
@@ -8,6 +10,7 @@ export default function FieldFormModal({
   formData,
   error,
   isSaving = false,
+  farmId,
   onClose,
   onChange,
   onConfirm,
@@ -15,6 +18,13 @@ export default function FieldFormModal({
   if (!isOpen) {
     return null;
   }
+
+  const errorMessage = typeof error === 'string' ? error : error?.message || '';
+  const errorCode = typeof error === 'object' ? error?.code : '';
+  const isAreaError = Boolean(
+    ['OPERATIONAL_AREA_NOT_CONFIGURED', 'OUTSIDE_OPERATIONAL_AREA'].includes(errorCode)
+    || /área operacional|fora da área|perímetro/i.test(errorMessage),
+  );
 
   return (
     <div className="field-modal-backdrop" role="dialog" aria-modal="true">
@@ -68,11 +78,27 @@ export default function FieldFormModal({
           </div>
         </div>
 
-        {error ? <p className="field-form-error">{error}</p> : null}
+        {errorMessage ? (
+          <div className="field-form-error-banner" role="alert">
+            <div className="field-form-error-content">
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>{errorMessage}</span>
+            </div>
+            {isAreaError && farmId ? (
+              <Link
+                to={`/fazendas/${farmId}/area-operacional`}
+                className="button button-secondary button-small field-form-error-action"
+                onClick={onClose}
+              >
+                Configurar área operacional
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="field-modal-actions">
           <button type="button" className="secondary-button" onClick={onClose} disabled={isSaving}>
-            Cancelar
+            Voltar ao mapa para ajustar pontos
           </button>
           <button type="button" className="primary-button" onClick={onConfirm} disabled={isSaving}>
             {isSaving ? 'Salvando...' : 'Confirmar Talhão'}

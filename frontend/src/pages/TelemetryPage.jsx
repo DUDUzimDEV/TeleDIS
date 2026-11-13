@@ -30,64 +30,66 @@ function MetricTrend({ metric, readings }) {
   const sourceLabel = source === 'SIMULATED'
     ? 'DADO SIMULADO'
     : source === 'REAL' ? 'DADO REAL' : 'ORIGEM NÃO INFORMADA';
-  const width = 720;
-  const height = 190;
-  const padding = 22;
   const values = points.map((point) => point.numericValue);
   const minimum = Math.min(...values);
   const maximum = Math.max(...values);
   const range = maximum - minimum;
-  const coordinates = points.map((point, index) => {
-    const x = points.length === 1
-      ? width / 2
-      : padding + (index * (width - padding * 2)) / (points.length - 1);
-    const y = range === 0
-      ? height / 2
-      : height - padding - ((point.numericValue - minimum) / range) * (height - padding * 2);
-    return { ...point, x, y };
-  });
+  const latestPoint = points[points.length - 1];
+  const recentPoints = points.slice(-24);
+  const peakThreshold = minimum + range * 0.78;
 
   return (
     <article className="telemetry-trend-card">
       <header>
-        <div><span className="section-overline">Variação por leitura</span><h2>{metric}</h2></div>
+        <div>
+          <span className="section-overline">Variação por leitura</span>
+          <h2>{metric}</h2>
+        </div>
         <div className="telemetry-trend-meta">
-          <span className="telemetry-unit">{points[0].unidade || 'Unidade não informada'}</span>
           <StatusBadge tone={source === 'SIMULATED' ? 'warning' : source === 'REAL' ? 'success' : 'neutral'}>{sourceLabel}</StatusBadge>
         </div>
       </header>
-      {points.length > 1 ? (
-        <p className="telemetry-chart-range">
-          Mín. {minimum.toLocaleString('pt-BR')} · Máx. {maximum.toLocaleString('pt-BR')}
-        </p>
-      ) : (
-        <p className="telemetry-chart-range">Uma leitura disponível; a variação será exibida quando houver novos pontos.</p>
-      )}
-      <svg
-        className="telemetry-trend-chart"
-        viewBox={`0 0 ${width} ${height}`}
+      <div className="telemetry-trend-latest">
+        <strong className="telemetry-latest-value">
+          {latestPoint.numericValue.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}
+        </strong>
+        <span className="telemetry-unit mono">{latestPoint.unidade || 'un'}</span>
+        {points.length > 1 ? (
+          <small className="telemetry-chart-range mono">
+            Mín. {minimum.toLocaleString('pt-BR')} · Máx. {maximum.toLocaleString('pt-BR')}
+          </small>
+        ) : (
+          <small className="telemetry-chart-range">1 leitura disponível</small>
+        )}
+      </div>
+      <div
+        className="telemetry-bar-chart"
         role="img"
-        aria-label={`Leituras de ${metric}, em ${points[0].unidade || 'unidade não informada'}, origem ${sourceLabel}`}
+        aria-label={`Leituras de ${metric}, em ${latestPoint.unidade || 'unidade não informada'}, origem ${sourceLabel}`}
       >
-        {[0, 1, 2].map((step) => {
-          const y = padding + ((height - padding * 2) / 2) * step;
-          return <line key={step} x1={padding} x2={width - padding} y1={y} y2={y} className="chart-grid" />;
+        {recentPoints.map((point) => {
+          const ratio = range === 0 ? 0.65 : 0.18 + ((point.numericValue - minimum) / range) * 0.82;
+          const isPeak = range > 0 && point.numericValue >= peakThreshold;
+          const barTone = source === 'SIMULATED'
+            ? (isPeak ? 'amber' : 'obsidian')
+            : (isPeak ? 'agro' : 'obsidian');
+          return (
+            <div
+              key={point.id || `${point.timestamp}-${point.numericValue}`}
+              className="telemetry-bar-column"
+              title={`${formatDateTime(point.timestamp)} · ${point.numericValue} ${point.unidade || ''}`}
+            >
+              <span
+                className={`telemetry-bar-fill telemetry-bar-fill--${barTone}`}
+                style={{ height: `${Math.round(ratio * 100)}%` }}
+              />
+            </div>
+          );
         })}
-        {coordinates.length > 1 ? (
-          <polyline
-            points={coordinates.map((point) => `${point.x},${point.y}`).join(' ')}
-            className={`telemetry-trend-line${source === 'SIMULATED' ? ' simulated' : ''}`}
-          />
-        ) : null}
-        {coordinates.map((point) => (
-          <circle key={point.id} cx={point.x} cy={point.y} r="4" className={`telemetry-trend-dot${source === 'SIMULATED' ? ' simulated' : ''}`}>
-            <title>{`${formatDateTime(point.timestamp)} · ${point.numericValue} ${point.unidade || ''}`}</title>
-          </circle>
-        ))}
-      </svg>
-      <div className="telemetry-chart-times">
-        <span>{formatDateTime(points[0].timestamp)}</span>
-        {points.length > 1 ? <span>{formatDateTime(points[points.length - 1].timestamp)}</span> : null}
+      </div>
+      <div className="telemetry-chart-times mono">
+        <span>{formatDateTime(recentPoints[0].timestamp)}</span>
+        {recentPoints.length > 1 ? <span>{formatDateTime(latestPoint.timestamp)}</span> : null}
       </div>
     </article>
   );
@@ -157,9 +159,9 @@ export default function TelemetryPage() {
       {activeResource.error ? <ErrorState message={activeResource.error} onRetry={activeResource.reload} /> : null}
 
       <section className="telemetry-summary" aria-label="Resumo das leituras filtradas">
-        <article><span>Leituras no recorte</span><strong>{resource.loading ? '—' : filteredReadings.length}</strong><small>Registros retornados pela API</small></article>
-        <article><span>Máquinas presentes</span><strong>{resource.loading ? '—' : machineCount}</strong><small>Com leitura neste conjunto</small></article>
-        <article><span>Métricas disponíveis</span><strong>{resource.loading ? '—' : metricCount}</strong><small>Tipos de medição recebidos</small></article>
+        <article><span>Leituras no recorte</span><strong>{activeResource.loading ? '—' : filteredReadings.length}</strong><small>Registros retornados pela API</small></article>
+        <article><span>Máquinas presentes</span><strong>{activeResource.loading ? '—' : machineCount}</strong><small>Com leitura neste conjunto</small></article>
+        <article><span>Métricas disponíveis</span><strong>{activeResource.loading ? '—' : metricCount}</strong><small>Tipos de medição recebidos</small></article>
         {simulatedCount ? (
           <article className="telemetry-simulated-summary"><span>Leituras simuladas</span><strong>{simulatedCount}</strong><small>Identificadas pela origem informada</small></article>
         ) : null}

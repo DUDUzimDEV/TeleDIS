@@ -18,6 +18,7 @@ import { snapPointToRoad } from '../utils/roadSnapping';
 import { routeErrorMessage, routeResponseToMap } from '../utils/routeUtils';
 import { formatDateTime, geoLineToLeaflet } from '../utils/geoData';
 import { getCommunicationStatus, getLatestTimestamp } from '../utils/liveStatus';
+import { distanceMeters, isPointInGeoJsonGeometry } from '../utils/spatialValidation';
 
 const ROAD_PROBLEM_SNAP_TOLERANCE_METERS = 30;
 const LIVE_REFRESH_INTERVAL_MS = 5000;
@@ -102,7 +103,7 @@ export default function OperationalMapPage() {
   const operationalAreaResource = useApiResource(
     activeFarmId ? `/api/v1/farms/${activeFarmId}/operational-area` : '',
     0,
-    { enabled: Boolean(activeFarmId && can('farm.view')) },
+    { enabled: Boolean(activeFarmId) },
   );
   const operationsResource = useApiResource(
     '/api/v1/operations',
@@ -134,6 +135,7 @@ export default function OperationalMapPage() {
   const [isLoadingRoads, setIsLoadingRoads] = useState(true);
   const [roadsLoadError, setRoadsLoadError] = useState('');
   const [roadsLoadAttempt, setRoadsLoadAttempt] = useState(0);
+  const [mapClickValidationError, setMapClickValidationError] = useState('');
   const [drawingMode, setDrawingMode] = useState(false);
   const [draftPoints, setDraftPoints] = useState([]);
   const [selectedFieldId, setSelectedFieldId] = useState(null);
@@ -198,6 +200,7 @@ export default function OperationalMapPage() {
   });
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const mapRef = useRef(null);
+  const lastVertexActionAtRef = useRef(0);
   const [selectedMachineId, setSelectedMachineId] = useState('');
   const [selectedStructureId, setSelectedStructureId] = useState('');
   const [routeError, setRouteError] = useState('');
@@ -274,12 +277,12 @@ export default function OperationalMapPage() {
     const matchesOperation = operationFilter === 'all' || String(operation?.id) === operationFilter;
     return matchesMachine && matchesStatus && matchesOperation;
   });
-  const mapStructures = structures.filter((structure) => (
+  const mapStructures = useMemo(() => structures.filter((structure) => (
     structureTypeFilter === 'all' || structure.tipo === structureTypeFilter
-  ));
-  const mapRoadProblems = roadProblems.filter((problem) => (
+  )), [structures, structureTypeFilter]);
+  const mapRoadProblems = useMemo(() => roadProblems.filter((problem) => (
     problemSeverityFilter === 'all' || problem.gravidade === problemSeverityFilter
-  ));
+  )), [roadProblems, problemSeverityFilter]);
   const structureTypes = [...new Set(structures.map((structure) => structure.tipo).filter(Boolean))];
   const problemSeverities = [...new Set(roadProblems.map((problem) => problem.gravidade).filter(Boolean))];
   const selectedMapMachine = mapMachineLocations.find(
@@ -641,6 +644,7 @@ export default function OperationalMapPage() {
     setDraftPoints([]);
     setShowForm(false);
     setFormError('');
+    setMapClickValidationError('');
     setSuccessMessage('');
   };
 
@@ -649,6 +653,7 @@ export default function OperationalMapPage() {
     setDraftPoints([]);
     setShowForm(false);
     setFormError('');
+    setMapClickValidationError('');
   };
 
   const startStructurePlacement = () => {
@@ -665,6 +670,7 @@ export default function OperationalMapPage() {
     setFormError('');
     setStructureSuccess('');
     setStructureError('');
+    setMapClickValidationError('');
     setStructurePoint(null);
     setPlacingStructure(true);
   };
@@ -674,6 +680,7 @@ export default function OperationalMapPage() {
     setStructurePoint(null);
     setShowStructureForm(false);
     setStructureError('');
+    setMapClickValidationError('');
   };
 
   const handleMapClick = (latlng) => {
@@ -681,8 +688,54 @@ export default function OperationalMapPage() {
       return;
     }
 
+    if (Date.now() - lastVertexActionAtRef.current < 200) {
+      return;
+    }
+
+    if (draftPoints.length > 0) {
+      const [lastLat, lastLng] = draftPoints[draftPoints.length - 1];
+      if (distanceMeters(latlng.lat, latlng.lng, lastLat, lastLng) < 1.5) {
+        return;
+      }
+    }
+
+    const operationalAreaGeometry = operationalAreaResource.data?.geometry;
+    if (operationalAreaGeometry && !isPointInGeoJsonGeometry(latlng.lat, latlng.lng, operationalAreaGeometry)) {
+      const message = 'Ponto fora da Área Operacional. Talhões e estruturas só podem ser cadastrados dentro do perímetro da fazenda.';
+      setMapClickValidationError(message);
+      setFormError(message);
+      return;
+    }
+
+    setMapClickValidationError('');
     setDraftPoints((current) => [...current, [latlng.lat, latlng.lng]]);
     setFormError('');
+  };
+
+  const handleRemoveDraftPoint = (index) => {
+    lastVertexActionAtRef.current = Date.now();
+    setDraftPoints((current) => current.filter((_, i) => i !== index));
+    setMapClickValidationError('');
+    setFormError('');
+  };
+
+  const handleMoveDraftPoint = (index, nextCoord) => {
+    const operationalAreaGeometry = operationalAreaResource.data?.geometry;
+    if (operationalAreaGeometry && !isPointInGeoJsonGeometry(nextCoord.lat, nextCoord.lng, operationalAreaGeometry)) {
+      const message = 'Ponto fora da Área Operacional. Talhões e estruturas só podem ser cadastrados dentro do perímetro da fazenda.';
+      setMapClickValidationError(message);
+      setFormError(message);
+      setDraftPoints((current) => [...current]);
+      return;
+    }
+
+    setMapClickValidationError('');
+    setFormError('');
+    setDraftPoints((current) => {
+      const next = [...current];
+      next[index] = [nextCoord.lat, nextCoord.lng];
+      return next;
+    });
   };
 
   const handleStructureMapClick = (latlng) => {
@@ -690,6 +743,15 @@ export default function OperationalMapPage() {
       return;
     }
 
+    const operationalAreaGeometry = operationalAreaResource.data?.geometry;
+    if (operationalAreaGeometry && !isPointInGeoJsonGeometry(latlng.lat, latlng.lng, operationalAreaGeometry)) {
+      const message = 'Ponto fora da Área Operacional. Talhões e estruturas só podem ser cadastrados dentro do perímetro da fazenda.';
+      setMapClickValidationError(message);
+      setStructureError(message);
+      return;
+    }
+
+    setMapClickValidationError('');
     const typeLabel = structureTypeOptions.find((option) => option.value === structureType)?.label || 'Estrutura';
     setStructurePoint({ latitude: latlng.lat, longitude: latlng.lng });
     setStructureFormData({ name: `${typeLabel} 01`, description: '' });
@@ -712,6 +774,7 @@ export default function OperationalMapPage() {
     setDraftRoadPoints([]);
     setShowRoadForm(false);
     setRoadError('');
+    setMapClickValidationError('');
     setRoadSuccess('');
   };
 
@@ -720,6 +783,7 @@ export default function OperationalMapPage() {
     setDraftRoadPoints([]);
     setShowRoadForm(false);
     setRoadError('');
+    setMapClickValidationError('');
   };
 
   const handleRoadMapClick = (latlng) => {
@@ -727,9 +791,89 @@ export default function OperationalMapPage() {
       return;
     }
 
+    if (Date.now() - lastVertexActionAtRef.current < 200) {
+      return;
+    }
+
+    if (draftRoadPoints.length > 0) {
+      const [lastLat, lastLng] = draftRoadPoints[draftRoadPoints.length - 1];
+      if (distanceMeters(latlng.lat, latlng.lng, lastLat, lastLng) < 1.5) {
+        return;
+      }
+    }
+
+    const allowedGeometry = operationalAreaResource.data?.proximity_zone || operationalAreaResource.data?.geometry;
+    if (allowedGeometry && !isPointInGeoJsonGeometry(latlng.lat, latlng.lng, allowedGeometry)) {
+      const message = 'Ponto fora da Zona de Proximidade. Vias só podem ser traçadas dentro da área operacional ou do raio de proximidade.';
+      setMapClickValidationError(message);
+      setRoadError(message);
+      return;
+    }
+
+    setMapClickValidationError('');
     setDraftRoadPoints((current) => [...current, [latlng.lat, latlng.lng]]);
     setRoadError('');
   };
+
+  const handleRemoveDraftRoadPoint = (index) => {
+    lastVertexActionAtRef.current = Date.now();
+    setDraftRoadPoints((current) => current.filter((_, i) => i !== index));
+    setMapClickValidationError('');
+    setRoadError('');
+  };
+
+  const handleMoveDraftRoadPoint = (index, nextCoord) => {
+    const allowedGeometry = operationalAreaResource.data?.proximity_zone || operationalAreaResource.data?.geometry;
+    if (allowedGeometry && !isPointInGeoJsonGeometry(nextCoord.lat, nextCoord.lng, allowedGeometry)) {
+      const message = 'Ponto fora da Zona de Proximidade. Vias só podem ser traçadas dentro da área operacional ou do raio de proximidade.';
+      setMapClickValidationError(message);
+      setRoadError(message);
+      setDraftRoadPoints((current) => [...current]);
+      return;
+    }
+
+    setMapClickValidationError('');
+    setRoadError('');
+    setDraftRoadPoints((current) => {
+      const next = [...current];
+      next[index] = [nextCoord.lat, nextCoord.lng];
+      return next;
+    });
+  };
+
+  const handleUndoDraftPoint = () => {
+    lastVertexActionAtRef.current = Date.now();
+    if (drawingMode && draftPoints.length > 0) {
+      setDraftPoints((current) => current.slice(0, -1));
+      setMapClickValidationError('');
+      setFormError('');
+    } else if (drawingRoad && draftRoadPoints.length > 0) {
+      setDraftRoadPoints((current) => current.slice(0, -1));
+      setMapClickValidationError('');
+      setRoadError('');
+    }
+  };
+
+  useEffect(() => {
+    if (!drawingMode && !drawingRoad) return;
+
+    const handleKeyDown = (event) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName)) return;
+      if (
+        event.key === 'Backspace'
+        || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z')
+      ) {
+        event.preventDefault();
+        handleUndoDraftPoint();
+      } else if (event.key === 'Escape') {
+        if (drawingMode) cancelDrawing();
+        if (drawingRoad) cancelRoadDrawing();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [drawingMode, drawingRoad, draftPoints.length, draftRoadPoints.length]);
 
   const startRoadProblemPlacement = () => {
     setIsPlanningRoute(false);
@@ -928,6 +1072,15 @@ export default function OperationalMapPage() {
     setRoadProblemFormData((current) => ({ ...current, [field]: value }));
   };
 
+  useEffect(() => {
+    const mode = searchParams.get('mode');
+    if (mode === 'field' && can('fields.create')) {
+      openDrawingMode();
+    } else if (mode === 'structure' && can('structures.create')) {
+      startStructurePlacement();
+    }
+  }, [searchParams]);
+
   const handleConfirmField = () => {
     if (isSaving) {
       return;
@@ -953,7 +1106,11 @@ export default function OperationalMapPage() {
       .then(async (response) => {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(apiErrorMessage(payload, response.status, 'Não foi possível salvar o talhão'));
+          const message = apiErrorMessage(payload, response.status, 'Não foi possível salvar o talhão');
+          const err = new Error(message);
+          err.code = payload?.detail?.code;
+          err.status = response.status;
+          throw err;
         }
         return payload;
       })
@@ -977,7 +1134,7 @@ export default function OperationalMapPage() {
         setSuccessMessage(`${savedField.name} cadastrado com ${savedField.areaHa.toFixed(2)} ha.`);
       })
       .catch((error) => {
-        setFormError(error.message || 'Não foi possível salvar o talhão. Revise os dados e tente novamente.');
+        setFormError(error);
       })
       .finally(() => setIsSaving(false));
   };
@@ -1012,7 +1169,11 @@ export default function OperationalMapPage() {
       .then(async (response) => {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(apiErrorMessage(payload, response.status, 'Não foi possível cadastrar a estrutura'));
+          const message = apiErrorMessage(payload, response.status, 'Não foi possível cadastrar a estrutura');
+          const err = new Error(message);
+          err.code = payload?.detail?.code;
+          err.status = response.status;
+          throw err;
         }
         return payload;
       })
@@ -1029,7 +1190,7 @@ export default function OperationalMapPage() {
         setStructureSuccess(`${structure.nome} cadastrada com sucesso.`);
       })
       .catch((error) => {
-        setStructureError(error.message || 'Não foi possível cadastrar a estrutura. Tente novamente.');
+        setStructureError(error);
       })
       .finally(() => setIsSavingStructure(false));
   };
@@ -1165,6 +1326,7 @@ export default function OperationalMapPage() {
     setShowStructureForm(false);
     setShowRoadForm(false);
     setShowRoadProblemForm(false);
+    setMapClickValidationError('');
   };
 
   const isSelecting = !drawingMode && !placingStructure && !drawingRoad && !placingRoadProblem && !isPlanningRoute;
@@ -1225,67 +1387,6 @@ export default function OperationalMapPage() {
         canPlanRoutes={can('routes.create')}
       />
 
-      {drawingMode ? (
-        <div className="field-drawing-banner">
-          <strong>Modo de cadastro de talhão ativo</strong>
-          <span>Clique no mapa para marcar os limites do novo talhão.</span>
-          <small>{draftPoints.length} ponto(s) adicionados</small>
-        </div>
-      ) : null}
-
-      {placingStructure ? (
-        <div className="structure-placement-banner">
-          <strong>Modo de cadastro de estrutura ativo</strong>
-          <label>
-            <span>Tipo</span>
-            <select value={structureType} onChange={(event) => setStructureType(event.target.value)}>
-              {structureTypeOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <span>Clique no mapa para escolher a localização.</span>
-          <button type="button" className="banner-action" onClick={cancelStructurePlacement}>Cancelar</button>
-        </div>
-      ) : null}
-
-      {drawingRoad ? (
-        <div className="road-drawing-banner">
-          <strong>Modo de desenho de estrada ativo</strong>
-          <span>Clique no mapa para adicionar pontos à linha.</span>
-          <small>{draftRoadPoints.length} ponto(s) · Aproximadamente {estimatedRoadLengthM.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</small>
-        </div>
-      ) : null}
-
-      {placingRoadProblem ? (
-        <div className="road-problem-placement-banner">
-          <strong>Modo de registro de problema ativo</strong>
-          <label>
-            <span>Estrada</span>
-            <select
-              value={roadProblemFormData.roadId}
-              onChange={(event) => {
-                setRoadProblemFormData((current) => ({ ...current, roadId: event.target.value }));
-                setRoadProblemError('');
-                setRoadProblemPoint(null);
-              }}
-              disabled={isLoadingRoads || roads.length === 0}
-            >
-              <option value="">Selecione uma estrada</option>
-              {roads.map((road) => (
-                <option key={road.id} value={String(road.id)}>{road.nome}</option>
-              ))}
-            </select>
-          </label>
-          <span>
-            {roads.length > 0
-              ? `Clique até ${ROAD_PROBLEM_SNAP_TOLERANCE_METERS} m da estrada selecionada; o ponto será encaixado na linha.`
-              : 'Cadastre uma estrada antes de registrar um problema.'}
-          </span>
-          <button type="button" className="banner-action" onClick={cancelRoadProblemPlacement}>Cancelar</button>
-        </div>
-      ) : null}
-
       {operationalAreaResource.error ? (
         <div className="field-error-banner" role="alert">
           <span>Não foi possível carregar a área operacional: {operationalAreaResource.error}</span>
@@ -1301,7 +1402,16 @@ export default function OperationalMapPage() {
         </div>
       ) : null}
 
-      {isLoading ? <div className="field-loading-banner" role="status">Carregando talhões...</div> : null}
+      {(isLoading || isLoadingStructures || isLoadingRoads || isLoadingRoadProblems) ? (
+        <div className="field-loading-banner" role="status">
+          Carregando camadas do mapa ({[
+            isLoading && 'talhões',
+            isLoadingStructures && 'estruturas',
+            isLoadingRoads && 'vias',
+            isLoadingRoadProblems && 'problemas',
+          ].filter(Boolean).join(', ')})...
+        </div>
+      ) : null}
       {loadError ? (
         <div className="field-error-banner" role="alert">
           <span>{loadError}</span>
@@ -1309,9 +1419,6 @@ export default function OperationalMapPage() {
             Tentar novamente
           </button>
         </div>
-      ) : null}
-      {isLoadingStructures ? (
-        <div className="field-loading-banner" role="status">Carregando estruturas...</div>
       ) : null}
       {structuresLoadError ? (
         <div className="field-error-banner" role="alert">
@@ -1325,7 +1432,6 @@ export default function OperationalMapPage() {
           </button>
         </div>
       ) : null}
-      {isLoadingRoads ? <div className="field-loading-banner" role="status">Carregando vias...</div> : null}
       {roadsLoadError ? (
         <div className="field-error-banner" role="alert">
           <span>{roadsLoadError}</span>
@@ -1333,9 +1439,6 @@ export default function OperationalMapPage() {
             Tentar novamente
           </button>
         </div>
-      ) : null}
-      {isLoadingRoadProblems ? (
-        <div className="field-loading-banner" role="status">Carregando problemas nas vias...</div>
       ) : null}
       {roadProblemsLoadError ? (
         <div className="field-error-banner" role="alert">
@@ -1411,8 +1514,174 @@ export default function OperationalMapPage() {
         </div>
       ) : null}
 
+      {!operationalAreaResource.loading && !operationalAreaResource.error && operationalAreaResource.data && !operationalAreaResource.data.configured ? (
+        <div className="operational-area-warning-banner" role="alert">
+          <div>
+            <strong>Área operacional não configurada</strong>
+            <p>A área operacional desta fazenda não foi configurada. O cadastro de talhões e estruturas exige que a área operacional esteja definida para validação espacial.</p>
+          </div>
+          {activeFarmId ? (
+            <Link to={`/fazendas/${activeFarmId}/area-operacional`} className="button button-primary button-small">
+              Configurar área operacional
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className={`map-stage-layout${mapFullscreen ? ' map-stage-fullscreen' : ''}`}>
         <section className="map-canvas-column">
+          {(drawingMode || placingStructure || drawingRoad || placingRoadProblem) ? (
+            <div className="map-floating-hud" role="status">
+              {mapClickValidationError ? (
+                <div className="map-hud-pill map-hud-pill--warning" role="alert">
+                  <TriangleAlert size={15} aria-hidden="true" />
+                  <span>{mapClickValidationError}</span>
+                  <button
+                    type="button"
+                    className="map-hud-dismiss"
+                    onClick={() => setMapClickValidationError('')}
+                    aria-label="Dispensar aviso"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : null}
+
+              {drawingMode ? (
+                <>
+                  <div className="map-hud-pill">
+                    <span className="map-hud-dot" />
+                    <strong>Desenho de talhão</strong>
+                    <small className="mono">{draftPoints.length} pt(s)</small>
+                    <button
+                      type="button"
+                      className="map-hud-action-secondary"
+                      onClick={handleUndoDraftPoint}
+                      disabled={draftPoints.length === 0}
+                      title="Desfazer último vértice (Backspace ou Ctrl+Z)"
+                    >
+                      Desfazer ponto
+                    </button>
+                    <button
+                      type="button"
+                      className="map-hud-action"
+                      onClick={handleFinalizeField}
+                      disabled={draftPoints.length < 3}
+                      title={draftPoints.length < 3 ? 'Adicione pelo menos 3 vértices' : 'Concluir desenho'}
+                    >
+                      Concluir desenho
+                    </button>
+                    <button type="button" className="map-hud-cancel" onClick={cancelDrawing}>
+                      Cancelar
+                    </button>
+                  </div>
+
+                  {draftPoints.length > 0 ? (
+                    <div className="map-hud-vertices-row" role="group" aria-label="Vértices do talhão">
+                      <span className="map-hud-vertices-label">Vértices:</span>
+                      {draftPoints.map((point, index) => (
+                        <button
+                          key={`draft-point-chip-${index}`}
+                          type="button"
+                          className="map-hud-vertex-chip"
+                          onClick={() => handleRemoveDraftPoint(index)}
+                          title={`Remover vértice P${index + 1}`}
+                        >
+                          <span>P{index + 1}</span>
+                          <span className="map-hud-vertex-chip-x" aria-hidden="true">×</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+
+              {placingStructure ? (
+                <div className="map-hud-pill">
+                  <span className="map-hud-dot" />
+                  <strong>Nova estrutura</strong>
+                  <select value={structureType} onChange={(event) => setStructureType(event.target.value)} aria-label="Tipo de estrutura">
+                    {structureTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="map-hud-cancel" onClick={cancelStructurePlacement}>Cancelar</button>
+                </div>
+              ) : null}
+
+              {drawingRoad ? (
+                <>
+                  <div className="map-hud-pill">
+                    <span className="map-hud-dot" />
+                    <strong>Desenho de via</strong>
+                    <small className="mono">{draftRoadPoints.length} pt(s) · ~{estimatedRoadLengthM.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} m</small>
+                    <button
+                      type="button"
+                      className="map-hud-action-secondary"
+                      onClick={handleUndoDraftPoint}
+                      disabled={draftRoadPoints.length === 0}
+                      title="Desfazer último ponto (Backspace ou Ctrl+Z)"
+                    >
+                      Desfazer ponto
+                    </button>
+                    <button
+                      type="button"
+                      className="map-hud-action"
+                      onClick={handleFinalizeRoad}
+                      disabled={draftRoadPoints.length < 2}
+                    >
+                      Concluir via
+                    </button>
+                    <button type="button" className="map-hud-cancel" onClick={cancelRoadDrawing}>
+                      Cancelar
+                    </button>
+                  </div>
+
+                  {draftRoadPoints.length > 0 ? (
+                    <div className="map-hud-vertices-row" role="group" aria-label="Pontos da via">
+                      <span className="map-hud-vertices-label">Pontos:</span>
+                      {draftRoadPoints.map((point, index) => (
+                        <button
+                          key={`draft-road-point-chip-${index}`}
+                          type="button"
+                          className="map-hud-vertex-chip"
+                          onClick={() => handleRemoveDraftRoadPoint(index)}
+                          title={`Remover ponto P${index + 1}`}
+                        >
+                          <span>P{index + 1}</span>
+                          <span className="map-hud-vertex-chip-x" aria-hidden="true">×</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+
+              {placingRoadProblem ? (
+                <div className="map-hud-pill">
+                  <span className="map-hud-dot map-hud-dot--danger" />
+                  <strong>Registrar problema</strong>
+                  <select
+                    value={roadProblemFormData.roadId}
+                    onChange={(event) => {
+                      setRoadProblemFormData((current) => ({ ...current, roadId: event.target.value }));
+                      setRoadProblemError('');
+                      setRoadProblemPoint(null);
+                    }}
+                    disabled={isLoadingRoads || roads.length === 0}
+                    aria-label="Estrada do problema"
+                  >
+                    <option value="">Selecione a estrada</option>
+                    {roads.map((road) => (
+                      <option key={road.id} value={String(road.id)}>{road.nome}</option>
+                    ))}
+                  </select>
+                  <small>{roads.length > 0 ? `Snap ${ROAD_PROBLEM_SNAP_TOLERANCE_METERS} m` : 'Sem estradas'}</small>
+                  <button type="button" className="map-hud-cancel" onClick={cancelRoadProblemPlacement}>Cancelar</button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
       <OperationalMap
         drawingMode={drawingMode}
         placingStructure={placingStructure}
@@ -1427,6 +1696,11 @@ export default function OperationalMapPage() {
         onRoadProblemMapClick={handleRoadProblemMapClick}
         routePickTarget={isPlanningRoute ? routePickTarget : null}
         onRouteMapClick={handleRouteMapClick}
+        onRemoveDraftPoint={handleRemoveDraftPoint}
+        onMoveDraftPoint={handleMoveDraftPoint}
+        onRemoveDraftRoadPoint={handleRemoveDraftRoadPoint}
+        onMoveDraftRoadPoint={handleMoveDraftRoadPoint}
+        farmId={activeFarmId}
         calculatedRoute={calculatedRoute}
         operationalArea={operationalAreaResource.data}
         machines={mapMachineLocations}
@@ -1454,6 +1728,7 @@ export default function OperationalMapPage() {
         areaHa={draftAreaHa}
         formData={formData}
         error={formError}
+        farmId={activeFarmId}
         onClose={() => {
           setShowForm(false);
           setFormError('');
@@ -1470,6 +1745,7 @@ export default function OperationalMapPage() {
         selectedPoint={structurePoint}
         formData={structureFormData}
         error={structureError}
+        farmId={activeFarmId}
         isSaving={isSavingStructure}
         onClose={cancelStructurePlacement}
         onTypeChange={setStructureType}

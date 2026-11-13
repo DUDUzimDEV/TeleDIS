@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import PageHeading from '../components/ui/PageHeading';
 import { ErrorState, LoadingState } from '../components/ui/PageState';
+import StatusBadge from '../components/ui/StatusBadge';
 
 export default function FarmSelectionPage() {
   const { farms, selectFarm, error, loading } = useAuth();
@@ -48,7 +49,14 @@ export default function FarmSelectionPage() {
               <span className="farm-selection-copy">
                 <strong>{farm.name}</strong>
                 <small><MapPin size={14} />{[farm.municipality, farm.state].filter(Boolean).join(' - ') || 'Localização não informada'}</small>
-                <small>{farm.role}</small>
+                <span className="farm-selection-meta">
+                  <StatusBadge tone="neutral">{farm.role}</StatusBadge>
+                  {(farm.total_area_ha ?? farm.area_ha) != null ? (
+                    <span className="farm-area-pill mono">
+                      {Number(farm.total_area_ha ?? farm.area_ha).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} ha
+                    </span>
+                  ) : null}
+                </span>
               </span>
               <span className="farm-selection-action">{selectingId === farm.id ? 'Abrindo...' : <ArrowRight size={18} />}</span>
             </button>

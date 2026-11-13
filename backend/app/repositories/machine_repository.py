@@ -21,7 +21,7 @@ class MachineRepository:
         return """
             SELECT machines.id, machines.name, machines.code, machines.status,
                    machines.base_structure_id,
-                   models.name AS tipo, machines.created_at
+                   COALESCE(machines.tipo, models.name) AS tipo, machines.created_at
             FROM machines
             LEFT JOIN models ON models.id = machines.model_id
         """
@@ -62,15 +62,16 @@ class MachineRepository:
             created = db.execute(
                 text(
                     """
-                    INSERT INTO machines (name, code, status, farm_id, base_structure_id)
-                    VALUES (:name, :code, :status, :farm_id, :base_structure_id)
-                    RETURNING id, name, code, status, base_structure_id, created_at
+                    INSERT INTO machines (name, code, status, tipo, farm_id, base_structure_id)
+                    VALUES (:name, :code, :status, :tipo, :farm_id, :base_structure_id)
+                    RETURNING id, name, code, status, tipo, base_structure_id, created_at
                     """
                 ),
                 {
                     "name": payload.name.strip(),
                     "code": payload.code.strip(),
                     "status": payload.status,
+                    "tipo": getattr(payload, "tipo", None),
                     "farm_id": farm_id,
                     "base_structure_id": getattr(payload, "base_structure_id", None),
                 },
@@ -88,7 +89,7 @@ class MachineRepository:
     def update(self, machine_id: int, farm_id: int, changes: dict):
         if not changes:
             return self.get_by_id(machine_id, farm_id)
-        allowed_columns = {"name", "code", "status", "base_structure_id"}
+        allowed_columns = {"name", "code", "status", "tipo", "base_structure_id"}
         if not changes.keys() <= allowed_columns:
             raise ValueError("Campos de máquina não suportados.")
         assignments = ", ".join(f"{column} = :{column}" for column in changes)

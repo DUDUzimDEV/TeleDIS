@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from 'react';
-import { Building2, MapPin, Search } from 'lucide-react';
+import { Building2, MapPin, Plus, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import EntityMap from '../components/map/EntityMap';
 import PageHeading from '../components/ui/PageHeading';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/PageState';
+import { useAuth } from '../context/AuthContext';
 import useApiResource from '../hooks/useApiResource';
 
 const asList = (value) => Array.isArray(value) ? value : [];
@@ -18,7 +20,12 @@ const typeLabels = {
 };
 
 export default function StructuresPage() {
+  const { activeFarmId, can } = useAuth();
   const resource = useApiResource('/api/v1/structures');
+  const operationalAreaResource = useApiResource(
+    activeFarmId && can('farm.view') ? `/api/v1/farms/${activeFarmId}/operational-area` : '',
+    0,
+  );
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState(null);
@@ -30,13 +37,37 @@ export default function StructuresPage() {
   )), [filter, search, structures]);
   const selected = structures.find((item) => item.id === selectedId) || visibleStructures[0] || null;
 
+  const isAreaConfigured = operationalAreaResource.data?.configured;
+
   return (
     <div className="infrastructure-screen">
       <PageHeading
         eyebrow="Infraestrutura da propriedade"
         title="Estruturas"
         description="Instalações e pontos de apoio georreferenciados."
+        actions={
+          can('structures.create') ? (
+            <Link to="/mapa?mode=structure" className="button button-primary button-small">
+              <Plus size={16} /> Nova estrutura
+            </Link>
+          ) : null
+        }
       />
+
+      {!operationalAreaResource.loading && !operationalAreaResource.error && operationalAreaResource.data && !isAreaConfigured ? (
+        <div className="operational-area-warning-banner" role="alert">
+          <div>
+            <strong>Área operacional não configurada</strong>
+            <p>O cadastro de estruturas exige que a área operacional da fazenda esteja definida para validação espacial.</p>
+          </div>
+          {activeFarmId ? (
+            <Link to={`/fazendas/${activeFarmId}/area-operacional`} className="button button-primary button-small">
+              Configurar área operacional
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+
       {resource.error ? <ErrorState message={resource.error} onRetry={resource.reload} /> : null}
       <div className="infrastructure-filters">
         <label className="search-field">
@@ -73,7 +104,16 @@ export default function StructuresPage() {
           <div className="list-panel-heading"><strong>Instalações</strong><span>{visibleStructures.length}</span></div>
           {resource.loading ? <LoadingState label="Carregando lista..." /> : null}
           {!resource.loading && !resource.error && !visibleStructures.length ? (
-            <EmptyState title={structures.length ? 'Nenhum resultado' : 'Lista vazia'} description={structures.length ? 'Altere o filtro ou a busca.' : 'Não há instalações retornadas pela API.'} icon={Building2} />
+            <div className="infrastructure-empty-wrapper">
+              <EmptyState title={structures.length ? 'Nenhum resultado' : 'Lista vazia'} description={structures.length ? 'Altere o filtro ou a busca.' : 'Não há instalações retornadas pela API.'} icon={Building2} />
+              {can('structures.create') ? (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
+                  <Link to="/mapa?mode=structure" className="button button-primary button-small">
+                    <Plus size={16} /> Marcar estrutura no mapa
+                  </Link>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           <div className="infrastructure-list">
             {visibleStructures.map((item) => (
